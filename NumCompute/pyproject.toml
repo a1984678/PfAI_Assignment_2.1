@@ -1,0 +1,6 @@
+"""
+pyproject.toml
+
+Packaging configuration for the numcompute package
+(dependencies, build system, metadata for installation).
+"""
