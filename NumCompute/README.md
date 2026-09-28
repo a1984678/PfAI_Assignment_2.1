@@ -49,3 +49,70 @@ pip install -e .
 conda deactivate
 conda env remove -n numComp_env   # if you need to start fresh
 ```
+
+
+## Running Tests
+
+Tests are written using **pytest** and live under the `tests/` directory.
+
+
+### 1. Run the full test suite
+
+From the project root:
+
+```bash
+pytest
+```
+
+### 2. Run tests for a single module
+
+```bash
+pytest tests/test_io.py
+```
+
+### 3. Run a single test function
+
+```bash
+pytest tests/test_io.py::test_mean_basic
+```
+
+### 4. Verbose output
+
+Shows each test name and pass/fail status individually:
+
+```bash
+pytest -v
+```
+
+### 5. Stop on first failure
+
+Useful when debugging — stops immediately instead of running the whole suite:
+
+```bash
+pytest -x
+```
+
+### 6. Show print statements / output
+
+By default pytest captures stdout; use `-s` to see it:
+
+```bash
+pytest -s
+```
+
+### 7. Check test coverage
+
+```bash
+pytest --cov=numcompute tests/
+```
+
+For a more detailed line-by-line report:
+
+```bash
+pytest --cov=numcompute --cov-report=term-missing tests/
+```
+
+### 8. Running tests in VSCode
+
+1. Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) → **Python: Configure Tests** → select **pytest** → select the `tests/` directory.
+2. Tests will then appear in the **Testing** sidebar (flask icon), where you can run/debug individual tests or the whole suite with one click.
