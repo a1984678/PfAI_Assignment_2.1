@@ -1,6 +1,14 @@
-"""
-pyproject.toml
+[project]
+name = "NumCompute"
+version = "0.0.1"
+dependencies = [
+    "numpy",
+    "pytest",
+]
 
-Packaging configuration for the numcompute package
-(dependencies, build system, metadata for installation).
-"""
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["numcompute*"]
