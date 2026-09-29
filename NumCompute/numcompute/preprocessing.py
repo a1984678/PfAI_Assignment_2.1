@@ -14,3 +14,5 @@ API:
 
 Fully vectorized using NumPy; avoid Python loops.
 """
+
+from pipeline import Transformer
