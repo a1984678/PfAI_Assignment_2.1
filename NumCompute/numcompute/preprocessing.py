@@ -29,16 +29,20 @@ class StandardScaler(Transformer):
         X = np.asarray(X, dtype=np.float64)
         if X.size == 0:
             raise ValueError("Cannot fit StandardScaler on an empty array.")
+        if X.ndim != 2:
+            raise ValueError("Input data must be at least 2 dimensions. Got shape: {}".format(X.shape))
         self.mean_ = np.mean(X, axis=0)
         self.scale_ = np.std(X, axis=0)
-        self.scale_[self.scale_ == 0] = 1  # Avoid division by zero for constant columns
+        self.scale_[self.scale_ <= 1e-8] = 1  # Avoid division by 0 and very small numbers
 
         return self
 
     def transform(self, X):
         X = np.asarray(X, dtype=np.float64)
         if X.size == 0:
-            raise ValueError("Cannot transform an empty array.")
+            return np.empty((0, self.mean_.shape[0]))  # Return empty array with correct shape
+        if X.ndim != 2:
+            raise ValueError("Input data must be at least 2 dimensions. Got shape: {}".format(X.shape))
         if not hasattr(self, 'mean_'):
             raise RuntimeError("fit must be called before transform.")
         if X.shape[1] != self.mean_.shape[0]:

@@ -37,9 +37,16 @@ def test_empty_transform():
 
     preprocessor = preprocessing.StandardScaler()
     preprocessor.fit(X)
-    with pytest.raises(ValueError, match="Cannot transform an empty array."):
-        preprocessor.transform(Y)
 
+    assert preprocessor.transform(Y).shape == (0, 2)  # Should return an empty array with the correct shape
+
+
+def test_1d_array():
+    X = np.array([1, 2, 3])  # 1D array
+
+    preprocessor = preprocessing.StandardScaler()
+    with pytest.raises(ValueError, match="Input data must be at least 2 dimensions. Got shape:"):
+        preprocessor.fit(X)
 
 def test_constant_column():
     X = np.array([[1, 10], [1, 30]])
@@ -51,6 +58,15 @@ def test_constant_column():
 
     assert np.all(Y_transformed[:, 0] == 0)  # All values in the constant column should be 0
 
+def test_tiny_values_constant_column():
+    X = np.array([[0.1], [0.1], [0.1]])
+    Y = np.array([[0.1], [0.2]])
+
+    preprocessor = preprocessing.StandardScaler()
+    preprocessor.fit(X)
+    Y_transformed = preprocessor.transform(Y)
+
+    np.testing.assert_allclose(Y_transformed[:, 0], np.array([0, 0.1]), atol=1e-8)  # The first column should be close to [0, 1]
 
 def test_transform_without_fit():
     Y = np.array([[1, 20], [1, 10]])
