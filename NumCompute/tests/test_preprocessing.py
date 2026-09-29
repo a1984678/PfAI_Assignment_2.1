@@ -8,23 +8,30 @@ from numcompute import preprocessing
 # Basic / expected behaviour
 # ---------------------------------------------------------------------
 
-def test_basic_case():
-    """Sanity check on a simple, well-formed input."""
-    pass
+def test_basic_standard_scaler():
 
+    X = np.array([[1, 10], [3, 30]])
+    Y = np.array([[2, 20], [1, 10]])
 
-def test_known_output():
-    """Check against a hand-computed expected result."""
-    pass
+    preprocessor = preprocessing.StandardScaler()
+    preprocessor.fit(X)
+    Y_transformed = preprocessor.transform(Y)
 
+    np.testing.assert_array_almost_equal(Y_transformed, np.array([[0, 0], [-1, -1]]), decimal=6)
 
+    
 # ---------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------
 
 def test_empty_array():
-    x = np.array([])
-    pass
+    X = np.array([]).reshape(0, 2)
+
+    preprocessor = preprocessing.StandardScaler()
+    preprocessor.fit(X)
+    X_transformed = preprocessor.transform(X)
+
+    np.testing.assert_array_equal(X_transformed, np.array([]).reshape(0, 2))
 
 # ---------------------------------------------------------------------
 # Error handling

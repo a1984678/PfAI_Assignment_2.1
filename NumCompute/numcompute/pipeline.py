@@ -17,6 +17,9 @@ Pipeline chaining, e.g.:
 class Transformer:
     """Base class for all transformers."""
 
+    def __init__(self):
+        pass
+
     def fit(self, X):
         """Compute the parameters needed for transformation."""
         raise NotImplementedError
