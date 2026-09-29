@@ -27,13 +27,24 @@ class StandardScaler(Transformer):
     def fit(self, X):
 
         X = np.asarray(X, dtype=np.float64)
+        if X.size == 0:
+            raise ValueError("Cannot fit StandardScaler on an empty array.")
         self.mean_ = np.mean(X, axis=0)
         self.scale_ = np.std(X, axis=0)
+        self.scale_[self.scale_ == 0] = 1  # Avoid division by zero for constant columns
 
         return self
 
     def transform(self, X):
         X = np.asarray(X, dtype=np.float64)
+        if X.size == 0:
+            raise ValueError("Cannot transform an empty array.")
+        if not hasattr(self, 'mean_'):
+            raise RuntimeError("fit must be called before transform.")
+        if X.shape[1] != self.mean_.shape[0]:
+            raise ValueError("Incompatible dimensionality.")
+        # if np.any(self.scale_ == 0):
+        #     return np.full_like(X, 0)  # Return all 0s for constant columns
         return (X - self.mean_) / self.scale_
     
 
