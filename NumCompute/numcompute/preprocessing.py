@@ -27,29 +27,42 @@ class StandardScaler(Transformer):
     def fit(self, X):
 
         X = np.asarray(X, dtype=np.float64)
-        if X.size == 0:
-            raise ValueError("Cannot fit StandardScaler on an empty array.")
+        
         if X.ndim != 2:
             raise ValueError("Input data must be at least 2 dimensions. Got shape: {}".format(X.shape))
-        self.mean_ = np.mean(X, axis=0)
-        self.scale_ = np.std(X, axis=0)
-        self.scale_[self.scale_ <= 1e-8] = 1  # Avoid division by 0 and very small numbers
+
+        if X.size == 0:
+            raise ValueError("Cannot fit StandardScaler on an empty array.")
+        
+        # Check if entire columns are NaN and raise an error if so
+        if np.any(np.all(np.isnan(X), axis=0)):
+            raise ValueError("Cannot fit StandardScaler on a column with all NaN values.")
+        
+        # Handle NaN values by using the nanmean and nanstd functions, which ignore NaN values in the computation
+        self.mean_ = np.nanmean(X, axis=0)
+        self.scale_ = np.nanstd(X, axis=0)
+
+        # Handle constant columns (where std is zero) by setting scale to 1 to avoid division by zero
+        is_constant = (np.nanmax(X, axis=0) - np.nanmin(X, axis=0)) ==0
+        self.scale_[is_constant] = 1.0  
 
         return self
 
     def transform(self, X):
-        X = np.asarray(X, dtype=np.float64)
-        if X.size == 0:
-            return np.empty((0, self.mean_.shape[0]))  # Return empty array with correct shape
-        if X.ndim != 2:
-            raise ValueError("Input data must be at least 2 dimensions. Got shape: {}".format(X.shape))
+
         if not hasattr(self, 'mean_'):
-            raise RuntimeError("fit must be called before transform.")
+            raise RuntimeError("fit must be called before transform.")        
+
+        X = np.asarray(X, dtype=np.float64)
+
+        if X.ndim != 2:
+            raise ValueError("Input data must be at least 2 dimensions. Got shape: {}".format(X.shape))        
+
         if X.shape[1] != self.mean_.shape[0]:
-            raise ValueError("Incompatible dimensionality.")
-        # if np.any(self.scale_ == 0):
-        #     return np.full_like(X, 0)  # Return all 0s for constant columns
+            raise ValueError("Incompatible dimensionality.")        
+        
         return (X - self.mean_) / self.scale_
+        
     
 
 class MinMaxScaler(Transformer):
