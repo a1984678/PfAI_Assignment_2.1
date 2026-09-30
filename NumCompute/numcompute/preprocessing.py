@@ -42,8 +42,8 @@ class StandardScaler(Transformer):
         self.mean_ = np.nanmean(X, axis=0)
         self.scale_ = np.nanstd(X, axis=0)
 
-        # Handle constant columns (where std is zero) by setting scale to 1 to avoid division by zero
-        is_constant = (np.nanmax(X, axis=0) - np.nanmin(X, axis=0)) ==0
+        # Handle constant columns by setting scale to 1 to avoid division by zero
+        is_constant = (np.nanmax(X, axis=0) - np.nanmin(X, axis=0)) == 0
         self.scale_[is_constant] = 1.0  
 
         return self
