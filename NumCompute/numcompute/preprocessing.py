@@ -69,7 +69,55 @@ class MinMaxScaler(Transformer):
     """Transform features by scaling each feature to a given range."""
 
     def __init__(self, feature_range=(0, 1)):
-        pass
+
+        if(feature_range[0] >= feature_range[1]):
+            raise ValueError("feature range must follow low < hi")
+
+        self.feature_range = feature_range
+
+    def fit(self, X):
+        X = np.asarray(X, dtype=np.float64)
+
+        if X.ndim != 2:
+            raise ValueError("Input data must be at least 2 dimensions. Got shape: {}".format(X.shape))
+
+        if X.size == 0:
+            raise ValueError("Cannot fit MinMaxScaler on an empty array.")
+
+        self.min_ = np.nanmin(X, axis=0)
+        self.max_ = np.nanmax(X, axis=0)
+        self.range_ = self.max_ - self.min_
+
+        # Replace zero ranges before dividing, so no inf is produced
+        is_constant = self.range_ == 0
+        safe_range = np.where(is_constant, 1.0, self.range_)
+
+        self.scale_ = (self.feature_range[1] - self.feature_range[0]) / safe_range
+
+
+
+        return self
+
+
+
+
+    def transform(self, X):
+
+        if not hasattr(self, 'scale_'):
+            raise RuntimeError("fit must be called before transform.") 
+
+        X = np.asarray(X, dtype=np.float64)
+
+        if X.ndim != 2:
+            raise ValueError("Input data must be at least 2 dimensions. Got shape: {}".format(X.shape))        
+
+        if X.shape[1] != self.min_.shape[0]:
+            raise ValueError("Incompatible dimensionality.")  
+
+        return (X - self.min_) * self.scale_ + self.feature_range[0]
+        
+
+
 
 class OneHotEncoder(Transformer):
     """Encode categorical features as a one-hot numeric array."""

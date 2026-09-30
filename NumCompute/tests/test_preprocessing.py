@@ -10,8 +10,8 @@ from numcompute import preprocessing
 
 ALL_TRANSFORMERS = [
     preprocessing.StandardScaler,
+    preprocessing.MinMaxScaler,
     pytest.param(preprocessing.SimpleImputer, marks=pytest.mark.xfail(strict=True)),
-    pytest.param(preprocessing.MinMaxScaler, marks=pytest.mark.xfail(strict=True)),
     pytest.param(preprocessing.OneHotEncoder, marks=pytest.mark.xfail(strict=True))
 ]
 
@@ -82,7 +82,7 @@ class TestStandardScaler:
     # Basic / expected behaviour
     # ---------------------------------------------------------------------
 
-    def test_basic_standard_scaler(self):
+    def test_basic(self):
 
         X = np.array([[1, 10], [3, 30]])
         Y = np.array([[2, 20], [1, 10]])
@@ -164,4 +164,70 @@ class TestStandardScaler:
             preprocessor.fit(X)
 
 
-# TODO(human): add class TestMinMaxScaler with the first failing behaviour tests.
+class TestMinMaxScaler:
+
+    def test_basic(self):
+        X = np.array([[1, 10], [3, 30]])
+        Y = np.array([[2, 20], [1, 10]])
+
+        preprocessor = preprocessing.MinMaxScaler()
+        preprocessor.fit(X)
+        Y_transformed = preprocessor.transform(Y)
+
+        np.testing.assert_array_almost_equal(Y_transformed, np.array([[0.5, 0.5], [0.0, 0.0]]), decimal=6)
+
+    def test_basic_negative_feature_range(self):
+        X = np.array([[1, 10], [3, 30]])
+        Y = np.array([[2, 20], [1, 10]])
+
+        preprocessor = preprocessing.MinMaxScaler(feature_range=(-1, 1))
+        preprocessor.fit(X)
+        Y_transformed = preprocessor.transform(Y)
+
+        np.testing.assert_array_almost_equal(Y_transformed, np.array([[0.0, 0.0], [-1.0, -1.0]]), decimal=6)
+
+    def test_basic_outside_range(self):
+        X = np.array([[1, 10], [3, 30]])
+        Y = np.array([[5, 50]])
+
+        preprocessor = preprocessing.MinMaxScaler()
+        preprocessor.fit(X)
+        Y_transformed = preprocessor.transform(Y)
+
+        np.testing.assert_array_almost_equal(Y_transformed, np.array([[2, 2]]), decimal=6)
+
+    def test_single_column_with_nan(self):
+        X = np.array([[10], [30], [np.nan]])
+        Y = np.array([[20], [40]])
+
+        preprocessor = preprocessing.MinMaxScaler()
+        preprocessor.fit(X)
+        Y_transformed = preprocessor.transform(Y)
+
+        np.testing.assert_array_almost_equal(Y_transformed, np.array([[0.5], [1.5]]), decimal=6)
+
+    def test_constant_column(self):
+        X = np.array([[1, 10], [1, 30]])
+        Y = np.array([[1, 20], [1, 10]])
+
+        preprocessor = preprocessing.MinMaxScaler()
+        preprocessor.fit(X)
+        Y_transformed = preprocessor.transform(Y)
+
+        np.testing.assert_array_almost_equal(Y_transformed, np.array([[0, 0.5], [0, 0]]), decimal=6)
+
+    def test_constant_column_negative_feature_range(self):
+        X = np.array([[1, 10], [1, 30]])
+        Y = np.array([[1, 20], [1, 10]])
+
+        preprocessor = preprocessing.MinMaxScaler(feature_range=(-1,1))
+        preprocessor.fit(X)
+        Y_transformed = preprocessor.transform(Y)
+
+        np.testing.assert_array_almost_equal(Y_transformed, np.array([[-1, 0], [-1, -1]]), decimal=6)
+
+    def test_invalid_feature_range(self):
+        X = np.array([[1, 10], [1, 30]])
+
+        with pytest.raises(ValueError, match="feature range must follow low < hi"):
+            preprocessor = preprocessing.MinMaxScaler(feature_range=(2,1))

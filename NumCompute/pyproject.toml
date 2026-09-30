@@ -6,6 +6,7 @@ dependencies = [
     "pytest",
     "pytest-cov"
 ]
+filterwarnings =["error"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
