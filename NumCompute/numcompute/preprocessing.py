@@ -69,16 +69,16 @@ class MinMaxScaler(Transformer):
     """Transform features by scaling each feature to a given range."""
 
     def __init__(self, feature_range=(0, 1)):
-        raise NotImplementedError
+        pass
 
 class OneHotEncoder(Transformer):
     """Encode categorical features as a one-hot numeric array."""
 
     def __init__(self):
-        raise NotImplementedError
+        pass
 
 class SimpleImputer(Transformer):
     """Impute missing values (NaN) with a constant value."""
 
     def __init__(self, fill_value=0):
-        raise NotImplementedError
+        pass
