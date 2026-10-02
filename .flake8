@@ -1,0 +1,6 @@
+[flake8]
+# Increase the max line length (PEP 8 default is 79)
+max-line-length = 100
+
+# increase E127 (continuation line under-indented for visual indent)
+extend-ignore = E127
