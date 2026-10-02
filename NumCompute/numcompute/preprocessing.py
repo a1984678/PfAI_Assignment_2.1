@@ -64,7 +64,6 @@ class StandardScaler(Transformer):
         return (X - self.mean_) / self.scale_
         
     
-
 class MinMaxScaler(Transformer):
     """Transform features by scaling each feature to a given range."""
 
@@ -98,9 +97,6 @@ class MinMaxScaler(Transformer):
 
         return self
 
-
-
-
     def transform(self, X):
 
         if not hasattr(self, 'scale_'):
@@ -117,13 +113,54 @@ class MinMaxScaler(Transformer):
         return (X - self.min_) * self.scale_ + self.feature_range[0]
         
 
-
-
 class OneHotEncoder(Transformer):
     """Encode categorical features as a one-hot numeric array."""
 
     def __init__(self):
         pass
+
+    def fit(self, X):
+        X = np.asarray(X, dtype=np.float64)
+
+        if X.ndim != 2:
+            raise ValueError("Input data must be at least 2 dimensions. Got shape: {}".format(X.shape))
+
+        if X.size == 0:
+            raise ValueError("Cannot fit OneHotEncoder on an empty array.")
+
+        # Using a loop here is acceptable i think since we need to find unique categories for each 
+        # column
+        self.categories_ = [np.unique(X[:, i]) for i in range(X.shape[1])]
+        return self
+
+    def transform(self, X):
+
+        if not hasattr(self, 'categories_'):
+            raise RuntimeError("fit must be called before transform.")
+        
+        X = np.asarray(X, dtype=np.float64)
+
+        if X.ndim != 2:
+            raise ValueError("Input data must be at least 2 dimensions. Got shape: {}".format(X.shape))
+
+        if X.shape[1] != len(self.categories_):
+            raise ValueError("Incompatible dimensionality.")
+
+
+        encoded_columns = []
+        for i, categories in enumerate(self.categories_):
+            col = X[:, i:i+1]
+            encoded = np.equal(col, categories) | (np.isnan(col) & np.isnan(categories))
+
+            # check for unseen categories in the input data
+            if not np.all(np.any(encoded, axis=1)):
+                raise ValueError("Found unknown categories during transform")
+
+            encoded_columns.append(encoded)
+
+        return np.hstack(encoded_columns).astype(np.float64)
+
+
 
 class SimpleImputer(Transformer):
     """Impute missing values (NaN) with a constant value."""

@@ -11,8 +11,8 @@ from numcompute import preprocessing
 ALL_TRANSFORMERS = [
     preprocessing.StandardScaler,
     preprocessing.MinMaxScaler,
+    preprocessing.OneHotEncoder,
     pytest.param(preprocessing.SimpleImputer, marks=pytest.mark.xfail(strict=True)),
-    pytest.param(preprocessing.OneHotEncoder, marks=pytest.mark.xfail(strict=True))
 ]
 
 @pytest.mark.parametrize("TransformerClass", ALL_TRANSFORMERS, ids=lambda cls: cls.__name__)
@@ -57,14 +57,14 @@ def test_empty_fit(TransformerClass):
 
 
 @pytest.mark.parametrize("TransformerClass", ALL_TRANSFORMERS, ids=lambda cls: cls.__name__)
-def test_empty_transform(TransformerClass):
+def test_empty_transform_general(TransformerClass):
     X = np.array([[1, 10], [3, 30]])
     Y = np.array([]).reshape(0, 2)
 
     preprocessor = TransformerClass()
     preprocessor.fit(X)
 
-    assert preprocessor.transform(Y).shape == (0, 2)  # Should return an empty array with the correct shape
+    assert preprocessor.transform(Y).shape[0] == 0  
 
 
 @pytest.mark.parametrize("TransformerClass", ALL_TRANSFORMERS, ids=lambda cls: cls.__name__)
@@ -74,6 +74,18 @@ def test_transform_without_fit(TransformerClass):
     preprocessor = TransformerClass()
     with pytest.raises(RuntimeError, match="fit must be called before transform."):
         preprocessor.transform(Y)
+
+@pytest.mark.parametrize("TransformerClass", ALL_TRANSFORMERS, ids=lambda cls: cls.__name__)
+def test_return_type(TransformerClass):
+    X = np.array([[0, 10], [1, 20]])
+    Y = np.array([[1, 20], [0, 10]])
+
+    preprocessor = TransformerClass()
+    preprocessor.fit(X)
+    Y_transformed = preprocessor.transform(Y)
+
+    assert isinstance(Y_transformed, np.ndarray), "Output should be a numpy array"
+    assert Y_transformed.dtype == np.float64, "Output dtype should be float64"
 
 
 class TestStandardScaler:
@@ -163,6 +175,14 @@ class TestStandardScaler:
         with pytest.raises(ValueError, match="Cannot fit StandardScaler on a column with all NaN values."):
             preprocessor.fit(X)
 
+    def test_empty_transform(self):
+        X = np.array([[1, 10], [3, 30]])
+        Y = np.array([]).reshape(0, 2)
+
+        preprocessor = preprocessing.StandardScaler()
+        preprocessor.fit(X)
+
+        assert preprocessor.transform(Y).shape == (0, 2)  # Should return an empty array with the correct shape
 
 class TestMinMaxScaler:
 
@@ -231,3 +251,68 @@ class TestMinMaxScaler:
 
         with pytest.raises(ValueError, match="feature range must follow low < hi"):
             preprocessor = preprocessing.MinMaxScaler(feature_range=(2,1))
+
+    def test_empty_transform(self):
+        X = np.array([[1, 10], [3, 30]])
+        Y = np.array([]).reshape(0, 2)
+
+        preprocessor = preprocessing.MinMaxScaler()
+        preprocessor.fit(X)
+
+        assert preprocessor.transform(Y).shape == (0, 2)  # Should return an empty array with the correct shape
+
+
+class TestOneHotEncoder:
+
+    def test_basic(self):
+        X = np.array([[0, 10], [1, 20], [2, 10]])
+        Y = np.array([[1, 20], [0, 10]])
+
+        preprocessor = preprocessing.OneHotEncoder()
+        preprocessor.fit(X)
+        Y_transformed = preprocessor.transform(Y)
+
+        expected = np.array([[0, 1, 0, 0,1], [1, 0, 0, 1,0]])  # One-hot encoded representation
+        np.testing.assert_array_equal(Y_transformed, expected)
+
+
+    # Made the decision to treat NaN as a separate category for one-hot encoding.
+    def test_NaN_as_category(self):
+        X = np.array([[0], [1], [np.nan]])
+        Y = np.array([[np.nan], [1]])
+
+        preprocessor = preprocessing.OneHotEncoder()
+        preprocessor.fit(X)
+        Y_transformed = preprocessor.transform(Y)
+
+        expected = np.array([[0, 0, 1], [0, 1, 0]])  
+        np.testing.assert_array_equal(Y_transformed, expected)
+
+    # Made the decision to raise an error if an unseen category is encountered during transform 
+    # rather than output all zeros.
+    def test_unseen_category(self):
+        X = np.array([[0], [1]])
+        Y = np.array([[2]])  # Category '2' is unseen
+
+        preprocessor = preprocessing.OneHotEncoder()
+        preprocessor.fit(X)
+        with pytest.raises(ValueError, match="Found unknown categories during transform"):
+            preprocessor.transform(Y)
+    
+    def test_unseen_category_is_nan(self):
+        X = np.array([[0], [1]])
+        Y = np.array([[np.nan]])  # NaN is unseen
+
+        preprocessor = preprocessing.OneHotEncoder()
+        preprocessor.fit(X)
+        with pytest.raises(ValueError, match="Found unknown categories during transform"):
+            preprocessor.transform(Y)
+
+    def test_mixed_row_with_unseen_category(self):
+        X = np.array([[0], [1]])
+        Y = np.array([[2], [0]])  # Category '2' is unseen
+
+        preprocessor = preprocessing.OneHotEncoder()
+        preprocessor.fit(X)
+        with pytest.raises(ValueError, match="Found unknown categories during transform"):
+            preprocessor.transform(Y)
