@@ -1,3 +1,4 @@
+# pyright: reportArgumentType=false
 import numpy as np
 import pytest
 
@@ -12,7 +13,7 @@ ALL_TRANSFORMERS = [
     preprocessing.StandardScaler,
     preprocessing.MinMaxScaler,
     preprocessing.OneHotEncoder,
-    pytest.param(preprocessing.SimpleImputer, marks=pytest.mark.xfail(strict=True)),
+    preprocessing.SimpleImputer,
 ]
 
 
@@ -342,3 +343,64 @@ class TestOneHotEncoder:
         preprocessor.fit(X)
         with pytest.raises(ValueError, match="Found unknown categories during transform"):
             preprocessor.transform(Y)
+
+
+class TestSimpleImputer:
+
+    def test_basic(self):
+        X = np.array([[1, np.nan], [3, 30]])
+        Y = np.array([[np.nan, 20], [1, np.nan]])
+
+        preprocessor = preprocessing.SimpleImputer(fill_value=0)
+        preprocessor.fit(X)
+        Y_transformed = preprocessor.transform(Y)
+
+        expected = np.array([[0, 20], [1, 0]])
+        np.testing.assert_array_equal(Y_transformed, expected)
+
+    def test_negative_fill_value(self):
+        X = np.array([[1, np.nan], [3, 30]])
+        Y = np.array([[np.nan, 20], [1, np.nan]])
+
+        preprocessor = preprocessing.SimpleImputer(fill_value=-1)
+        preprocessor.fit(X)
+        Y_transformed = preprocessor.transform(Y)
+
+        expected = np.array([[-1, 20], [1, -1]])
+        np.testing.assert_array_equal(Y_transformed, expected)
+
+    def test_all_nan_column(self):
+        X = np.array([[np.nan, 10], [np.nan, 30]])
+        Y = np.array([[np.nan, 20], [1, np.nan]])
+
+        preprocessor = preprocessing.SimpleImputer(fill_value=0)
+        preprocessor.fit(X)
+        Y_transformed = preprocessor.transform(Y)
+
+        # This shouldnt raise an error, and the NaN in the first column should be replaced with 0
+        expected = np.array([[0, 20], [1, 0]])
+        np.testing.assert_array_equal(Y_transformed, expected)
+
+    def test_string_fill_value_type(self):
+        with pytest.raises(ValueError, match="fill_value must be a numeric type"):
+            preprocessing.SimpleImputer(fill_value="invalid")
+
+    def test_nan_fill_value_type(self):
+        with pytest.raises(ValueError, match="fill_value must be a numeric type"):
+            preprocessing.SimpleImputer(fill_value=np.nan)
+
+    def test_infinity_fill_value_type(self):
+        with pytest.raises(ValueError, match="fill_value must be a numeric type"):
+            preprocessing.SimpleImputer(fill_value=np.inf)
+
+    def test_large_numeric_fill_value(self):
+        X = np.array([[1, np.nan], [3, 30]])
+        Y = np.array([[np.nan, 20], [1, np.nan]])
+
+        large_value = np.int64(1e10)
+        preprocessor = preprocessing.SimpleImputer(fill_value=large_value)
+        preprocessor.fit(X)
+        Y_transformed = preprocessor.transform(Y)
+
+        expected = np.array([[large_value, 20], [1, large_value]])
+        np.testing.assert_array_equal(Y_transformed, expected)

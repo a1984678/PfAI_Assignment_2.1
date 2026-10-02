@@ -137,7 +137,7 @@ class OneHotEncoder(Transformer):
 
         if not hasattr(self, 'categories_'):
             raise RuntimeError("fit must be called before transform.")
-        
+
         X = np.asarray(X, dtype=np.float64)
 
         if X.ndim != 2:
@@ -164,4 +164,40 @@ class SimpleImputer(Transformer):
     """Impute missing values (NaN) with a constant value."""
 
     def __init__(self, fill_value=0):
-        pass
+
+        # Validate fill_value to ensure it's a numeric type and not NaN or Inf and accept large 
+        # numbers e.g. np.int64, np.float64
+        if (not isinstance(fill_value, (int, float, np.integer, np.floating))
+            or np.isnan(fill_value)
+            or np.isinf(fill_value)
+            ):
+
+            raise ValueError("fill_value must be a numeric type")
+
+        self.fill_value = fill_value
+
+    def fit(self, X):
+        X = np.asarray(X, dtype=np.float64)
+
+        if X.ndim != 2:
+            raise ValueError("Input data must have 2 dimensions. Got shape: {}".format(X.shape))
+
+        if X.size == 0:
+            raise ValueError("Cannot fit SimpleImputer on an empty array.")
+
+        self.columns_ = X.shape[1]
+        return self
+
+    def transform(self, X):
+        if not hasattr(self, 'columns_'):
+            raise RuntimeError("fit must be called before transform.")
+
+        X = np.asarray(X, dtype=np.float64)
+
+        if X.ndim != 2:
+            raise ValueError("Input data must have 2 dimensions. Got shape: {}".format(X.shape))
+
+        if X.shape[1] != self.columns_:
+            raise ValueError("Incompatible dimensionality.")
+
+        return np.where(np.isnan(X), self.fill_value, X)
