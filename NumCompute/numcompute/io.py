@@ -10,7 +10,8 @@ io.py
 import numpy as np
 from os import path
 
-def load_csv(file_path, delimiter=',', missing="fill", fill_value=np.nan , skip_header=0):
+
+def load_csv(file_path, delimiter=',', missing="fill", fill_value=np.nan, skip_header=0):
     """
     Load a CSV file into a NumPy array.
 
@@ -26,9 +27,9 @@ def load_csv(file_path, delimiter=',', missing="fill", fill_value=np.nan , skip_
     -------
     - data: np.ndarray, loaded data as a NumPy array (n_rows, n_columns)
     - on empty files, returns an empty array with shape (0, 0)
-    - on skipping rows, returns an array with shape (n_rows, n_columns) where n_rows 
+    - on skipping rows, returns an array with shape (n_rows, n_columns) where n_rows
     is the number of complete rows
-    - on filling missing values, returns an array with shape (n_rows, n_columns) where n_rows 
+    - on filling missing values, returns an array with shape (n_rows, n_columns) where n_rows
     is the total number of rows in the file
 
     Raises:
@@ -37,7 +38,8 @@ def load_csv(file_path, delimiter=',', missing="fill", fill_value=np.nan , skip_
     - FileNotFoundError: if the specified file does not exist
 
     Complexity:
-    - Time complexity: O(n*m) where n is the number of rows and m is the number of columns 
+    ----------
+    - Time complexity: O(n*m) where n is the number of rows and m is the number of columns
     in the CSV file
     - Space complexity: O(n*m) for storing the loaded data in memory
 
@@ -55,11 +57,9 @@ def load_csv(file_path, delimiter=',', missing="fill", fill_value=np.nan , skip_
 
     data = np.genfromtxt(file_path, delimiter=delimiter, skip_header=skip_header, ndmin=2)
 
-
-    
     if missing == "skip":
         data = data[~np.isnan(data).any(axis=1)]  # Remove rows with NaN values
     else:
         data = np.where(np.isnan(data), fill_value, data)  # Fill NaN values with fill_value
-    
+
     return data

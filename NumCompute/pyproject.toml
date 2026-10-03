@@ -4,9 +4,14 @@ version = "0.0.1"
 dependencies = [
     "numpy",
     "pytest",
-    "pytest-cov"
+    "pytest-cov",
+    "flake8"
 ]
-filterwarnings =["error"]
+
+
+[tool.pytest.ini_options]
+filterwarnings = ["error"]
+testpaths = ["tests"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
