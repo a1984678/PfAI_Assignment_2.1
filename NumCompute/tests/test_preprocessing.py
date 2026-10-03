@@ -289,6 +289,15 @@ class TestMinMaxScaler:
         # Should return an empty array with the correct shape
         assert preprocessor.transform(Y).shape == (0, 2)
 
+    def test_nan_column(self):
+        X = np.array([[np.nan, 10], [np.nan, 30]])
+
+        preprocessor = preprocessing.MinMaxScaler()
+
+        with pytest.raises(ValueError, match="Cannot fit MinMaxScaler on a column with all "
+                                             "NaN values."):
+            preprocessor.fit(X)
+
 
 class TestOneHotEncoder:
 
