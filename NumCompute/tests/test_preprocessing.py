@@ -115,6 +115,35 @@ def test_transform_does_not_mutate_input(TransformerClass):
     np.testing.assert_array_equal(Y, Y_copy, err_msg="Input array was mutated during transform.")
 
 
+@pytest.mark.parametrize("TransformerClass", ALL_TRANSFORMERS, ids=lambda cls: cls.__name__)
+def test_fit_transform_with_y_parameter(TransformerClass):
+    X = np.array([[1, 10], [3, 30]])
+    y = np.array([0, 1])
+
+    preprocessor = TransformerClass()
+    X_fit_transform = preprocessor.fit_transform(X, y=y)
+    preprocessor2 = TransformerClass()
+    preprocessor2.fit(X, y=y)
+    X_transform = preprocessor2.transform(X)
+
+    np.testing.assert_array_almost_equal(X_fit_transform, X_transform, decimal=6)
+
+
+@pytest.mark.parametrize("TransformerClass", ALL_TRANSFORMERS, ids=lambda cls: cls.__name__)
+def test_y_ignored_in_fit(TransformerClass):
+    X = np.array([[1, 10], [3, 30]])
+    y = np.array([0, 1])
+
+    preprocessor = TransformerClass()
+    X_fit_transform = preprocessor.fit_transform(X, y)
+
+    preprocessor2 = TransformerClass()
+    preprocessor2.fit(X)
+    X_transform = preprocessor2.transform(X)
+
+    np.testing.assert_array_almost_equal(X_fit_transform, X_transform, decimal=6)
+
+
 class TestStandardScaler:
 
     # ---------------------------------------------------------------------

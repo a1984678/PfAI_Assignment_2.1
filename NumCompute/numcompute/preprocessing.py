@@ -48,7 +48,7 @@ class StandardScaler(Transformer):
     def __init__(self):
         pass
 
-    def fit(self, X):
+    def fit(self, X, y=None):
         """
         Fit the scaler on the data by computing the mean and standard deviation for each feature.
 
@@ -172,7 +172,7 @@ class MinMaxScaler(Transformer):
 
         self.feature_range = feature_range
 
-    def fit(self, X):
+    def fit(self, X, y=None):
         """
         Fit the scaler on the data by computing the min and max for each feature.
 
@@ -274,7 +274,7 @@ class OneHotEncoder(Transformer):
     def __init__(self):
         pass
 
-    def fit(self, X):
+    def fit(self, X, y=None):
         """
         Fit the encoder on the data by finding the unique categories for each feature.
 
@@ -395,7 +395,7 @@ class SimpleImputer(Transformer):
 
         self.fill_value = fill_value
 
-    def fit(self, X):
+    def fit(self, X, y=None):
         """
         Fit the imputer on the data. For SimpleImputer, this just checks the input data and
         stores the number of features.
