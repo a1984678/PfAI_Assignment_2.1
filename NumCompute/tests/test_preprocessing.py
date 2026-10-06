@@ -3,17 +3,27 @@ import numpy as np
 import pytest
 
 from numcompute import preprocessing
+from numcompute.pipeline import Pipeline
 
 
 # ---------------------------------------------------------------------
 # Contract tests (must hold for every transformer)
 # ---------------------------------------------------------------------
 
+def impute_scale_pipeline():
+    """Build a fresh transformer-only Pipeline for the contract tests."""
+    return Pipeline([
+        ("impute", preprocessing.SimpleImputer()),
+        ("scale", preprocessing.StandardScaler()),
+    ])
+
+
 ALL_TRANSFORMERS = [
     preprocessing.StandardScaler,
     preprocessing.MinMaxScaler,
     preprocessing.OneHotEncoder,
     preprocessing.SimpleImputer,
+    impute_scale_pipeline,
 ]
 
 
