@@ -55,6 +55,16 @@ class Pipeline:
 
     def __init__(self, steps):
         self.steps = steps
+        if not self.steps:
+            return
+
+        for name, transformer in self.steps[:-1]:
+            if not hasattr(transformer, "fit_transform"):
+                raise TypeError(f"Pipeline step {name!r} must be a transformer")
+
+        name, estimator = self.steps[-1]
+        if not hasattr(estimator, "fit"):
+            raise TypeError(f"Final pipeline step {name!r} must implement fit")
 
     def fit(self, X, y=None):
         """Fit all transformers and the final estimator."""
@@ -62,23 +72,17 @@ class Pipeline:
             return self
 
         transformed = X
-        for name, transformer in self.steps[:-1]:
-            if not hasattr(transformer, "fit_transform"):
-                raise TypeError(f"Pipeline step {name!r} must be a transformer")
+        for _, transformer in self.steps[:-1]:
             transformed = transformer.fit_transform(transformed, y)
 
-        name, estimator = self.steps[-1]
-        if not hasattr(estimator, "fit"):
-            raise TypeError(f"Final pipeline step {name!r} must implement fit")
+        _, estimator = self.steps[-1]
         estimator.fit(transformed, y)
         return self
 
     def transform(self, X):
         """Apply all transformers to the data."""
         transformed = X
-        for name, transformer in self.steps:
-            if not hasattr(transformer, "transform"):
-                raise TypeError(f"Pipeline step {name!r} must implement transform")
+        for _, transformer in self.steps:
             transformed = transformer.transform(transformed)
         return transformed
 
@@ -86,8 +90,6 @@ class Pipeline:
         """Fit all transformers and transform the data."""
         transformed = X
         for name, transformer in self.steps:
-            if not hasattr(transformer, "fit_transform"):
-                raise TypeError(f"Pipeline step {name!r} must implement fit_transform")
             transformed = transformer.fit_transform(transformed, y)
         return transformed
 
@@ -98,13 +100,9 @@ class Pipeline:
 
         transformed = X
         for name, transformer in self.steps[:-1]:
-            if not hasattr(transformer, "transform"):
-                raise TypeError(f"Pipeline step {name!r} must implement transform")
             transformed = transformer.transform(transformed)
 
         name, estimator = self.steps[-1]
-        if not hasattr(estimator, "predict"):
-            raise TypeError(f"Final pipeline step {name!r} must implement predict")
         return estimator.predict(transformed)
 
 
