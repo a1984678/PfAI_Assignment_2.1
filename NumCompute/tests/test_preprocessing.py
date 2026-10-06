@@ -392,6 +392,84 @@ class TestOneHotEncoder:
         with pytest.raises(ValueError, match="Found unknown categories during transform"):
             preprocessor.transform(Y)
 
+    def test_string_category(self):
+        X = np.array([["cat"], ["dog"], ["cat"]])
+        Y = np.array([["dog"], ["cat"]])
+
+        preprocessor = preprocessing.OneHotEncoder()
+        preprocessor.fit(X)
+        Y_transformed = preprocessor.transform(Y)
+
+        expected = np.array([[0, 1], [1, 0]])  # One-hot encoded representation
+        np.testing.assert_array_equal(Y_transformed, expected)
+
+    def test_string_category_with_nan(self):
+        X = np.array([["cat"], ["dog"], [np.nan]], dtype=object)
+        Y = np.array([[np.nan], ["dog"]], dtype=object)
+
+        preprocessor = preprocessing.OneHotEncoder()
+        preprocessor.fit(X)
+        Y_transformed = preprocessor.transform(Y)
+
+        expected = np.array([[0, 0, 1], [0, 1, 0]])  # One-hot encoded representation
+        np.testing.assert_array_equal(Y_transformed, expected)
+
+    def test_string_category_with_unseen(self):
+        X = np.array([["cat"], ["dog"]])
+        Y = np.array([["mouse"]])  # Unseen category
+
+        preprocessor = preprocessing.OneHotEncoder()
+        preprocessor.fit(X)
+        with pytest.raises(ValueError, match="Found unknown categories during transform"):
+            preprocessor.transform(Y)
+
+    def test_string_category_with_unseen_and_nan(self):
+        X = np.array([["cat"], ["dog"]])
+        Y = np.array([["cat"], [np.nan]], dtype=object)  # Unseen category and NaN
+
+        preprocessor = preprocessing.OneHotEncoder()
+        preprocessor.fit(X)
+        with pytest.raises(ValueError, match="Found unknown categories during transform"):
+            preprocessor.transform(Y)
+
+    def test_string_category_with_number(self):
+        X = np.array([["cat"], ["dog"]])
+        Y = np.array([[1]], dtype=object)  # Unseen category (number)
+
+        preprocessor = preprocessing.OneHotEncoder()
+        preprocessor.fit(X)
+        with pytest.raises(ValueError, match="Found unknown categories during transform"):
+            preprocessor.transform(Y)
+
+    def test_mixed_string_and_number_category(self):
+        X = np.array([["cat"], ["dog"]])
+        Y = np.array([["cat"], [1]], dtype=object)  # Mixed: seen string and unseen number
+
+        preprocessor = preprocessing.OneHotEncoder()
+        preprocessor.fit(X)
+        with pytest.raises(ValueError, match="Found unknown categories during transform"):
+            preprocessor.transform(Y)
+
+    def test_load_csv_output_shape(self):
+        # Simulate loading a CSV with mixed types
+        X = np.array([["cat", 1.0], ["dog", 2.0], ["cat", 3.0]], dtype=object)
+        Y = np.array([["dog", 1.0], ["cat", 3.0]], dtype=object)
+
+        preprocessor = preprocessing.OneHotEncoder()
+        preprocessor.fit(X)
+        Y_transformed = preprocessor.transform(Y)
+
+        expected = np.array([[0, 1, 1, 0, 0], [1, 0, 0, 0, 1]])
+        np.testing.assert_array_equal(Y_transformed, expected)
+
+    def test_mixed_column_raises_type_error(self):
+        X = np.array([[1, "cat"], ["two", "dog"]], dtype=object)
+
+        preprocessor = preprocessing.OneHotEncoder()
+
+        with pytest.raises(TypeError, match="Mixed types in columns"):
+            preprocessor.fit(X)
+
 
 class TestSimpleImputer:
 
