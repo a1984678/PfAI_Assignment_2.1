@@ -1,6 +1,6 @@
 """
 optim.py
-
+"""
 import numpy as np
 
 _METHODS = ("central", "forward")
