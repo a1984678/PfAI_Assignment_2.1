@@ -262,6 +262,9 @@ class OneHotEncoder(Transformer):
 
     Note:
     ----
+    - Categories may be numbers or strings. Input that cannot be converted to float64 is kept
+    as an object array (e.g. the output of load_csv with dtype=object).
+    - Each column must contain either only numbers or only strings (NaN is allowed in both).
     - NaN values are treated as a separate category.
     - If a feature has the same value for all samples, it will be transformed to a single
     column of ones.
@@ -273,6 +276,42 @@ class OneHotEncoder(Transformer):
 
     def __init__(self):
         pass
+
+    @staticmethod
+    def _as_array(X):
+        """
+        Convert X to a float64 array if possible, otherwise to an object array so strings
+        are kept.
+        """
+        try:
+            return np.asarray(X, dtype=np.float64)
+        except (ValueError, TypeError):
+            return np.asarray(X, dtype=object)
+
+    @staticmethod
+    def _unique(col):
+        """
+        Return the sorted unique values of a column with a single NaN placed at the end.
+
+        Raises:
+        ------
+        - TypeError: if the column mixes strings and numbers
+        """
+        # NaN is the only value not equal to itself, this works for both float and object dtypes
+        is_nan = col != col
+        values = col[~is_nan]
+
+        if col.dtype == object:
+            is_str = np.array([isinstance(v, str) for v in values], dtype=bool)
+            if np.any(is_str) and not np.all(is_str):
+                raise TypeError("Mixed types in columns, use all numbers or all strings.")
+
+        categories = np.unique(values)
+
+        if np.any(is_nan):
+            categories = np.append(categories, np.nan)
+
+        return categories
 
     def fit(self, X, y=None):
         """
@@ -289,8 +328,9 @@ class OneHotEncoder(Transformer):
         Raises:
         ------
         - ValueError: if the input data is empty or not 2-dimensional
+        - TypeError: if a column mixes strings and numbers
         """
-        X = np.asarray(X, dtype=np.float64)
+        X = self._as_array(X)
 
         if X.ndim != 2:
             raise ValueError("Input data must have 2 dimensions. Got shape: {}".format(X.shape))
@@ -300,7 +340,7 @@ class OneHotEncoder(Transformer):
 
         # Using a loop here is acceptable since we need to find unique categories for each
         # column
-        self.categories_ = [np.unique(X[:, i]) for i in range(X.shape[1])]
+        self.categories_ = [self._unique(X[:, i]) for i in range(X.shape[1])]
         return self
 
     def transform(self, X):
@@ -325,7 +365,7 @@ class OneHotEncoder(Transformer):
         if not hasattr(self, 'categories_'):
             raise RuntimeError("fit must be called before transform.")
 
-        X = np.asarray(X, dtype=np.float64)
+        X = self._as_array(X)
 
         if X.ndim != 2:
             raise ValueError("Input data must have 2 dimensions. Got shape: {}".format(X.shape))
@@ -336,7 +376,8 @@ class OneHotEncoder(Transformer):
         encoded_columns = []
         for i, categories in enumerate(self.categories_):
             col = X[:, i:i+1]
-            encoded = np.equal(col, categories) | (np.isnan(col) & np.isnan(categories))
+            # x != x is True only for NaN, unlike np.isnan this also works on strings
+            encoded = (col == categories) | ((col != col) & (categories != categories))
 
             # check for unseen categories in the input data
             if not np.all(np.any(encoded, axis=1)):
