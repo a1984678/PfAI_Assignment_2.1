@@ -145,4 +145,3 @@ class TestPercentile:
     def test_non_numeric_raises(self):
         with pytest.raises(ValueError, match="must be numeric"):
             rank.percentile(["a", "b"], 50)
-            

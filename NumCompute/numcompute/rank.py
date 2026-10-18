@@ -253,4 +253,3 @@ def percentile(data, q, interpolation="linear", axis=None):
     if np.ndim(result) == 0:
         return float(result)
     return result
-

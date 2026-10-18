@@ -606,5 +606,3 @@ class RunningStats:
         - Time and space complexity: O(1)
         """
         return float(np.sqrt(self.variance(ddof)))
-
-    

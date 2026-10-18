@@ -157,4 +157,3 @@ def test_jacobian_changing_output_size_raises():
 def test_jacobian_invalid_method_raises():
     with pytest.raises(ValueError, match="method must be 'central' or 'forward'"):
         optim.jacobian(lambda v: v, [1.0], method="sideways")
-        
