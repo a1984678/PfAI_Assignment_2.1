@@ -204,14 +204,15 @@ def leaky_relu(x, alpha=0.01):
 
     Raises:
     ------
-    - ValueError: if x is non-numeric or empty, or alpha is negative or not a number
+    - ValueError: if x is non-numeric or empty, or alpha is not a number, is negative,
+    NaN or infinite
 
     Complexity:
     ----------
     - Time and space complexity: O(n)
     """
     if (isinstance(alpha, bool) or not isinstance(alpha, (int, float, np.integer, np.floating))
-         or not np.isfinite(alpha) or alpha < 0):
+            or not np.isfinite(alpha) or alpha < 0):
         raise ValueError("alpha must be a finite number >= 0. Got: {!r}".format(alpha))
     arr = _as_float(x, "x")
     out = np.where(arr > 0, arr, alpha * arr)
@@ -319,7 +320,8 @@ def softmax(x, axis=-1):
     shifted = arr - np.max(arr, axis=axis, keepdims=True)
     exps = np.exp(shifted)
     return exps / np.sum(exps, axis=axis, keepdims=True)
-  
+
+
 def log_softmax(x, axis=-1):
     """
     log(softmax(x)) computed directly, which stays accurate when probabilities are tiny.
@@ -340,6 +342,11 @@ def log_softmax(x, axis=-1):
     Complexity:
     ----------
     - Time and space complexity: O(n)
+
+    Note:
+    ----
+    - Uses the same shift as softmax: log_softmax(x) = (x - max) - log(sum(exp(x - max))).
+    Taking np.log(softmax(x)) instead would give log(0) = -inf for very small probabilities.
     """
     arr = _as_float(x, "x")
     if arr.ndim == 0:
