@@ -171,7 +171,7 @@ def _class_counts(y_true, y_pred):
 
     Complexity:
     ----------
-    - Time complexity: O(n log k + k^2) where k is the number of classes
+    - Time complexity: O(n log n + k^2) where k is the number of classes
     - Space complexity: O(n + k^2)
     """
     labels = np.union1d(y_true, y_pred)
@@ -255,8 +255,8 @@ def confusion_matrix(y_true, y_pred, labels=None):
 
     Complexity:
     ----------
-    - Time complexity: O(n log k + k^2) where n is the number of samples and
-    k is the number of classes
+    - Time complexity: O(n log n + k^2) where n is the number of samples and k is the number
+    of classes; if labels is given the sort is skipped and it is O(n log k + k^2)
     - Space complexity: O(n + k^2)
 
     Note:
@@ -333,7 +333,7 @@ def precision(y_true, y_pred, pos_label=1, average="binary"):
 
     Complexity:
     ----------
-    - Time complexity: O(n log k + k^2) where k is the number of classes
+    - Time complexity: O(n log n + k^2) where k is the number of classes
     - Space complexity: O(n + k^2)
 
     Note:
@@ -367,7 +367,7 @@ def recall(y_true, y_pred, pos_label=1, average="binary"):
 
     Complexity:
     ----------
-    - Time complexity: O(n log k + k^2) where k is the number of classes
+    - Time complexity: O(n log n + k^2) where k is the number of classes
     - Space complexity: O(n + k^2)
 
     Note:
@@ -400,7 +400,7 @@ def f1(y_true, y_pred, pos_label=1, average="binary"):
 
     Complexity:
     ----------
-    - Time complexity: O(n log k + k^2) where k is the number of classes
+    - Time complexity: O(n log n + k^2) where k is the number of classes
     - Space complexity: O(n + k^2)
 
     Note:
