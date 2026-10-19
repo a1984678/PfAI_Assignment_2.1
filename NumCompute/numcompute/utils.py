@@ -465,8 +465,10 @@ def batches(*arrays, batch_size, shuffle=False, seed=0, drop_last=False):
 
     Complexity:
     ----------
-    - Time complexity: O(n) in total
-    - Space complexity: O(batch_size) per batch
+    - Time complexity: O(n * d) in total, where d is the number of values in one row of an array
+    - Space complexity: O(batch_size * d) per batch, because indexing with an array copies the
+    rows. With shuffle=True the shuffled index array adds O(n) once, and an input that is not
+    already a NumPy array is converted first, which costs O(n * d).
     """
     if not arrays:
         raise ValueError("At least one array is required.")
