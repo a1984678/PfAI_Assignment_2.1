@@ -173,7 +173,7 @@ def percentile(data, q, interpolation="linear", axis=None):
       - 'linear' (default): a + f * (b - a)
       - 'lower': a
       - 'higher': b
-      - 'midpoint': (a + b) / 2
+      - 'midpoint': (a + b) / 2, computed as a / 2 + b / 2 so it cannot overflow
     - axis: None (default, flatten) or int, the axis to compute along
 
     Returns:
@@ -238,10 +238,11 @@ def percentile(data, q, interpolation="linear", axis=None):
     elif interpolation == "higher":
         result = above
     elif interpolation == "midpoint":
-        result = np.where(above == below, below, (below + above) / 2.0)
+        result = np.where(above == below, below, below / 2.0 + above / 2.0)
     else:
         frac = pos - np.floor(pos)
-        result = np.where(above == below, below, below + frac * (above - below))
+        # below * (1 - frac) + above * frac cannot overflow, unlike below + frac * (above - below)
+        result = np.where(above == below, below, below * (1.0 - frac) + above * frac)
     result = np.where(n_valid == 0, np.nan, result)
 
     # (..., k) -> (k, ...) like NumPy, then tidy the shape
@@ -253,4 +254,3 @@ def percentile(data, q, interpolation="linear", axis=None):
     if np.ndim(result) == 0:
         return float(result)
     return result
-

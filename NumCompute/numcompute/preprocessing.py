@@ -78,13 +78,21 @@ class StandardScaler(Transformer):
         if np.any(np.all(np.isnan(X), axis=0)):
             raise ValueError("Cannot fit StandardScaler on a column with all NaN values.")
 
-        # Handle NaN values by using the nanmean and nanstd functions, which ignore NaN values in
-        # the computation
+        # nanmean and nanstd ignore NaN values
         self.mean_ = np.nanmean(X, axis=0)
-        self.scale_ = np.nanstd(X, axis=0)
 
-        # Handle constant columns by setting scale to 1 to avoid division by zero
+        # Squaring very large or very small deviations overflows or underflows (1e200 ** 2 is
+        # inf, 1e-200 ** 2 is 0). So divide the deviations by their largest absolute value first,
+        # take the std of those numbers (all between -1 and 1), then multiply the peak back in.
+        deviations = X - self.mean_
+        peak = np.nanmax(np.abs(deviations), axis=0)
+
+        # A constant column has no spread: use a scale of 1 so it maps to 0 and not 0 / 0.
+        # The check uses max - min because the mean of equal floats can differ in the last digit.
         is_constant = (np.nanmax(X, axis=0) - np.nanmin(X, axis=0)) == 0
+        safe_peak = np.where(is_constant | (peak == 0), 1.0, peak)
+
+        self.scale_ = safe_peak * np.nanstd(deviations / safe_peak, axis=0)
         self.scale_[is_constant] = 1.0
 
         return self
@@ -146,7 +154,7 @@ class MinMaxScaler(Transformer):
     Note:
     ----
     - NaN values are ignored in the computation of min and max.
-    - In a constanct column the range is treated as 1 to avoid division by zero, so these
+    - In a constant column the range is treated as 1 to avoid division by zero, so these
     training values map to feature_range[0].
     - NaN values in the input data will remain NaN in the output data after transformation.
     - There is no clipping of values outside the feature_range; values can exceed the specified
@@ -164,13 +172,21 @@ class MinMaxScaler(Transformer):
 
         Raises:
         ------
-        - ValueError: if feature_range low >= hi
+        - ValueError: if feature_range is not a pair of finite numbers with low < hi
         """
 
-        if (feature_range[0] >= feature_range[1]):
+        try:
+            low, high = (float(v) for v in feature_range)
+        except (TypeError, ValueError):
+            raise ValueError("feature_range must be a pair of numbers (low, high).")
+
+        if not (np.isfinite(low) and np.isfinite(high)):
+            raise ValueError("feature_range values must be finite.")
+
+        if low >= high:
             raise ValueError("feature range must follow low < hi")
 
-        self.feature_range = feature_range
+        self.feature_range = (low, high)
 
     def fit(self, X, y=None):
         """
@@ -262,14 +278,16 @@ class OneHotEncoder(Transformer):
 
     Note:
     ----
-    - Categories may be numbers or strings. Input that cannot be converted to float64 is kept
-    as an object array (e.g. the output of load_csv with dtype=object).
+    - Categories may be numbers or strings. Every value is kept exactly as given: numbers stay
+    numbers (integers are not converted to float64, which would merge 2**53 and 2**53 + 1) and
+    strings stay strings, so a string such as "1" is never confused with the number 1.
+    An object array (e.g. the output of load_csv with dtype=object) is also accepted.
     - Each column must contain either only numbers or only strings (NaN is allowed in both).
     - NaN values are treated as a separate category.
     - If a feature has the same value for all samples, it will be transformed to a single
     column of ones.
     - The order of the categories in the output will be the same as the order of the unique
-    categories found during fit this is ascending with Nan values placed at the end.
+    categories found during fit; this is ascending with NaN values placed at the end.
     - The output will be a binary array where each column corresponds to a unique category,
     and the value will be 1 if the sample belongs to that category and 0 otherwise.
     """
@@ -280,13 +298,20 @@ class OneHotEncoder(Transformer):
     @staticmethod
     def _as_array(X):
         """
-        Convert X to a float64 array if possible, otherwise to an object array so strings
-        are kept.
+        Convert X to an array without changing any value.
+
+        Numbers keep their own dtype (int stays int, so large integers are not rounded by a
+        float64 conversion). Strings and anything else (a list that mixes strings and numbers,
+        a ragged list) become an object array, so every value keeps its own type: NumPy would
+        otherwise turn a list such as [1, "a"] into the strings "1" and "a".
         """
         try:
-            return np.asarray(X, dtype=np.float64)
-        except (ValueError, TypeError):
+            arr = np.asarray(X)
+        except ValueError:
             return np.asarray(X, dtype=object)
+        if arr.dtype.kind in "biuf" or (arr.dtype.kind == "U" and isinstance(X, np.ndarray)):
+            return arr
+        return np.asarray(X, dtype=object)
 
     @staticmethod
     def _unique(col):
@@ -301,12 +326,12 @@ class OneHotEncoder(Transformer):
         is_nan = col != col
         values = col[~is_nan]
 
-        if col.dtype == object:
-            is_str = np.array([isinstance(v, str) for v in values], dtype=bool)
-            if np.any(is_str) and not np.all(is_str):
-                raise TypeError("Mixed types in columns, use all numbers or all strings.")
-
-        categories = np.unique(values)
+        # np.unique sorts, and sorting a column that mixes strings and numbers raises TypeError.
+        # Using that error avoids checking the type of every value in a Python loop.
+        try:
+            categories = np.unique(values)
+        except TypeError:
+            raise TypeError("Mixed types in columns, use all numbers or all strings.") from None
 
         if np.any(is_nan):
             categories = np.append(categories, np.nan)
@@ -338,8 +363,8 @@ class OneHotEncoder(Transformer):
         if X.size == 0:
             raise ValueError("Cannot fit OneHotEncoder on an empty array.")
 
-        # Using a loop here is acceptable since we need to find unique categories for each
-        # column
+        # The number of categories differs between columns, so each column is handled by its own
+        # call to _unique, which uses whole-array NumPy calls.
         self.categories_ = [self._unique(X[:, i]) for i in range(X.shape[1])]
         return self
 
@@ -425,13 +450,11 @@ class SimpleImputer(Transformer):
         - ValueError: if fill_value is not a numeric type or is NaN or Inf
         """
 
-        # Validate fill_value to ensure it's a numeric type and not NaN or Inf and accept large
-        # numbers e.g. np.int64, np.float64
-        if (not isinstance(fill_value, (int, float, np.integer, np.floating))
-            or np.isnan(fill_value)
-            or np.isinf(fill_value)
-            ):
-
+        # fill_value must be a real number (bool is rejected, although Python counts it as an
+        # int), not NaN or Inf. np.int64 and np.float64 are accepted, so large numbers work.
+        is_number = (isinstance(fill_value, (int, float, np.integer, np.floating))
+                     and not isinstance(fill_value, bool))
+        if not is_number or np.isnan(fill_value) or np.isinf(fill_value):
             raise ValueError("fill_value must be a numeric type")
 
         self.fill_value = fill_value

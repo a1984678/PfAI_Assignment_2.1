@@ -456,4 +456,3 @@ def binary_search(sorted_array, x, check_sorted=False):
     if np.ndim(index) == 0:
         return int(index), bool(found)
     return index, found
-

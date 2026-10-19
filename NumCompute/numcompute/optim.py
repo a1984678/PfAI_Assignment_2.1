@@ -215,4 +215,3 @@ def jacobian(F, x, h=1e-5, method="central"):
             J[:, j] = (F_plus - F0) / h
 
     return J
-

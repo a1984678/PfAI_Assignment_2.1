@@ -34,7 +34,8 @@ def time_it(func, *args, repeats=5, warmup=1, **kwargs):
 
     Raises:
     ------
-    - ValueError: if func is not callable, repeats < 1 or warmup < 0
+    - ValueError: if func is not callable, repeats is not an integer >= 1 or warmup is not
+    an integer >= 0
 
     Complexity:
     ----------
@@ -48,14 +49,14 @@ def time_it(func, *args, repeats=5, warmup=1, **kwargs):
     """
     if not callable(func):
         raise ValueError("func must be callable.")
-    if repeats < 1 or int(repeats) != repeats:
+    if isinstance(repeats, bool) or not isinstance(repeats, (int, np.integer)) or repeats < 1:
         raise ValueError("repeats must be an integer >= 1. Got: {!r}".format(repeats))
-    if warmup < 0 or int(warmup) != warmup:
+    if isinstance(warmup, bool) or not isinstance(warmup, (int, np.integer)) or warmup < 0:
         raise ValueError("warmup must be an integer >= 0. Got: {!r}".format(warmup))
-    for _ in range(int(warmup)):
+    for _ in range(warmup):
         func(*args, **kwargs)
-    times = np.empty(int(repeats))
-    for i in range(int(repeats)):
+    times = np.empty(repeats)
+    for i in range(repeats):
         start = time.perf_counter()
         func(*args, **kwargs)
         times[i] = time.perf_counter() - start
@@ -106,7 +107,7 @@ def report(results, baseline=None):
 
     Raises:
     ------
-    - ValueError: if results is empty, a time is not positive, or baseline is unknown
+    - ValueError: if results is empty, a time is not positive and finite, or baseline is unknown
 
     Complexity:
     ----------
@@ -114,8 +115,8 @@ def report(results, baseline=None):
     """
     if not isinstance(results, dict) or not results:
         raise ValueError("results must be a non-empty dict of {label: seconds}.")
-    if any(t <= 0 for t in results.values()):
-        raise ValueError("All times must be positive.")
+    if any(not np.isfinite(t) or t <= 0 for t in results.values()):
+        raise ValueError("All times must be positive and finite.")
     if baseline is None:
         baseline = next(iter(results))
     if baseline not in results:

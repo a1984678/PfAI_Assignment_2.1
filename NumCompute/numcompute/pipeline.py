@@ -104,14 +104,14 @@ class Estimator:
     def __init__(self):
         pass
 
-    def fit(self, X, y):
+    def fit(self, X, y=None):
         """
         Fit the model to the data.
 
         Parameters:
         ----------
         - X: array-like of shape (n_samples, n_features)
-        - y: array-like of shape (n_samples,), target values
+        - y: array-like of shape (n_samples,), target values (None if the model needs none)
 
         Returns:
         -------
@@ -142,6 +142,25 @@ class Estimator:
         raise NotImplementedError
 
 
+def _fit_transform_step(name, step, X, y):
+    """
+    Fit one step and return its transformed output.
+
+    Uses step.fit_transform(X, y) if the step has it, otherwise step.fit(X, y) followed by
+    step.transform(X), so a plain object with only fit and transform also works.
+
+    Raises:
+    ------
+    - TypeError: if the step has neither fit_transform nor both fit and transform
+    """
+    if hasattr(step, "fit_transform"):
+        return step.fit_transform(X, y)
+    if hasattr(step, "fit") and hasattr(step, "transform"):
+        step.fit(X, y)
+        return step.transform(X)
+    raise TypeError(f"Pipeline step {name!r} must implement fit_transform, or fit and transform")
+
+
 class Pipeline:
     """
     Chain transformers, optionally ending in an estimator.
@@ -152,8 +171,8 @@ class Pipeline:
     Parameters:
     ----------
     - steps: list of (name, object) tuples
-        Intermediate objects must implement fit_transform; the final object must
-        implement fit.
+        Intermediate objects must implement fit_transform, or fit and transform; the final
+        object must implement fit.
 
     Attributes:
     ----------
@@ -168,7 +187,10 @@ class Pipeline:
     ----
     - Steps are validated when the Pipeline is created, not when it is fitted.
     - Steps are not copied; fitting the Pipeline fits the objects you passed in.
-    - y is passed to every step's fit, so transformers must accept a y argument.
+    - y is passed to every step's fit (as fit(X, y)), so every step's fit must accept a second
+    argument; the Transformer and Estimator base classes already do.
+    - Any object with fit and transform works as a step, it does not have to inherit from
+    Transformer. A step with fit_transform is called through it, otherwise fit then transform.
     - An empty Pipeline is allowed: fit does nothing and transform returns X unchanged.
     """
 
@@ -182,7 +204,7 @@ class Pipeline:
 
         Raises:
         ------
-        - TypeError: if any step before the last does not implement fit_transform
+        - TypeError: if any step before the last has neither fit_transform nor fit and transform
         - TypeError: if the final step does not implement fit
         """
         self.steps = steps
@@ -190,8 +212,10 @@ class Pipeline:
             return
 
         for name, transformer in self.steps[:-1]:
-            if not hasattr(transformer, "fit_transform"):
-                raise TypeError(f"Pipeline step {name!r} must be a transformer")
+            if not (hasattr(transformer, "fit_transform")
+                    or (hasattr(transformer, "fit") and hasattr(transformer, "transform"))):
+                raise TypeError(f"Pipeline step {name!r} must be a transformer "
+                                "(fit_transform, or fit and transform)")
 
         name, estimator = self.steps[-1]
         if not hasattr(estimator, "fit"):
@@ -214,8 +238,8 @@ class Pipeline:
             return self
 
         transformed = X
-        for _, transformer in self.steps[:-1]:
-            transformed = transformer.fit_transform(transformed, y)
+        for name, transformer in self.steps[:-1]:
+            transformed = _fit_transform_step(name, transformer, transformed, y)
 
         _, estimator = self.steps[-1]
         estimator.fit(transformed, y)
@@ -260,13 +284,12 @@ class Pipeline:
 
         Raises:
         ------
-        - TypeError: if any step (including the last) does not implement fit_transform
+        - TypeError: if any step (including the last) has neither fit_transform nor fit and
+        transform
         """
         transformed = X
         for name, transformer in self.steps:
-            if not hasattr(transformer, "fit_transform"):
-                raise TypeError(f"Pipeline step {name!r} must implement fit_transform")
-            transformed = transformer.fit_transform(transformed, y)
+            transformed = _fit_transform_step(name, transformer, transformed, y)
         return transformed
 
     def predict(self, X):

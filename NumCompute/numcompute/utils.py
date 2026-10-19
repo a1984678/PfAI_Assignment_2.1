@@ -12,6 +12,8 @@ Shared numerical helpers (NumPy only).
 
 import numpy as np
 
+from .sort_search import _stable_argsort
+
 _METRICS = ("euclidean", "manhattan", "cosine")
 
 
@@ -88,11 +90,15 @@ def pairwise_distances(X, Y=None, metric="euclidean"):
 
     Note:
     ----
-    - euclidean uses |x|^2 + |y|^2 - 2 x.y so the heavy work is one matrix product
-    (no (n, m, d) intermediate array); tiny negative values from rounding are clipped to 0
-    and the diagonal of a self-comparison is exactly 0.
-    - manhattan loops over the d columns (not over rows), adding |x_j - y_j| each time,
-    which keeps memory at O(n * m).
+    - euclidean and manhattan both loop over the d columns (not over rows). Each column adds
+    its difference |x_j - y_j| to the running distance, so memory stays O(n * m) and no
+    (n, m, d) array is built. Euclidean uses np.hypot(total, difference), which is sqrt(total^2
+    + difference^2) without overflow or underflow.
+    - The faster formula |x|^2 + |y|^2 - 2 x.y was not used: for points that are close together
+    but far from the origin (e.g. 1e9 and 1e9 + 1) it subtracts two nearly equal huge numbers
+    and returns 0 instead of 1.
+    - When Y is omitted the diagonal is set to exactly 0. When Y is given, nothing is forced:
+    cosine distance from a zero vector is 1 even to an identical zero row.
     """
     if metric not in _METRICS:
         raise ValueError("metric must be one of {}. Got: {!r}"
@@ -105,8 +111,9 @@ def pairwise_distances(X, Y=None, metric="euclidean"):
                          .format(A.shape[1], B.shape[1]))
 
     if metric == "euclidean":
-        sq = (A ** 2).sum(axis=1)[:, None] + (B ** 2).sum(axis=1)[None, :] - 2.0 * A @ B.T
-        D = np.sqrt(np.maximum(sq, 0.0))
+        D = np.zeros((A.shape[0], B.shape[0]))
+        for j in range(A.shape[1]):
+            D = np.hypot(D, A[:, j][:, None] - B[:, j][None, :])
     elif metric == "manhattan":
         D = np.zeros((A.shape[0], B.shape[0]))
         for j in range(A.shape[1]):
@@ -189,7 +196,7 @@ def leaky_relu(x, alpha=0.01):
     Parameters:
     ----------
     - x: array-like of numbers, any shape
-    - alpha: float >= 0, slope for negative inputs
+    - alpha: finite float >= 0, slope for negative inputs
 
     Returns:
     -------
@@ -197,14 +204,16 @@ def leaky_relu(x, alpha=0.01):
 
     Raises:
     ------
-    - ValueError: if x is non-numeric or empty, or alpha is negative or not a number
+    - ValueError: if x is non-numeric or empty, or alpha is not a number, is negative,
+    NaN or infinite
 
     Complexity:
     ----------
     - Time and space complexity: O(n)
     """
-    if not isinstance(alpha, (int, float, np.integer, np.floating)) or alpha < 0:
-        raise ValueError("alpha must be a number >= 0. Got: {!r}".format(alpha))
+    if (isinstance(alpha, bool) or not isinstance(alpha, (int, float, np.integer, np.floating))
+            or not np.isfinite(alpha) or alpha < 0):
+        raise ValueError("alpha must be a finite number >= 0. Got: {!r}".format(alpha))
     arr = _as_float(x, "x")
     out = np.where(arr > 0, arr, alpha * arr)
     return float(out) if out.ndim == 0 else out
@@ -298,15 +307,19 @@ def softmax(x, axis=-1):
 
     Note:
     ----
-    - Computed as exp(x - logsumexp(x)), so large inputs such as 1000 do not overflow.
+    - The largest value along the axis is subtracted first, so the biggest exponent is
+    exp(0) = 1 and large inputs such as 1000 or 1e16 do not overflow. The shifted values are
+    then exponentiated and divided by their sum.
     """
     arr = _as_float(x, "x")
     if arr.ndim == 0:
         raise ValueError("x must be at least 1-dimensional.")
     if not np.isfinite(arr).all():
         raise ValueError("x must not contain NaN or infinity.")
-    _check_axis(axis, arr.ndim)
-    return np.exp(arr - logsumexp(arr, axis=axis, keepdims=True))
+    axis = _check_axis(axis, arr.ndim)
+    shifted = arr - np.max(arr, axis=axis, keepdims=True)
+    exps = np.exp(shifted)
+    return exps / np.sum(exps, axis=axis, keepdims=True)
 
 
 def log_softmax(x, axis=-1):
@@ -329,14 +342,20 @@ def log_softmax(x, axis=-1):
     Complexity:
     ----------
     - Time and space complexity: O(n)
+
+    Note:
+    ----
+    - Uses the same shift as softmax: log_softmax(x) = (x - max) - log(sum(exp(x - max))).
+    Taking np.log(softmax(x)) instead would give log(0) = -inf for very small probabilities.
     """
     arr = _as_float(x, "x")
     if arr.ndim == 0:
         raise ValueError("x must be at least 1-dimensional.")
     if not np.isfinite(arr).all():
         raise ValueError("x must not contain NaN or infinity.")
-    _check_axis(axis, arr.ndim)
-    return arr - logsumexp(arr, axis=axis, keepdims=True)
+    axis = _check_axis(axis, arr.ndim)
+    shifted = arr - np.max(arr, axis=axis, keepdims=True)
+    return shifted - np.log(np.sum(np.exp(shifted), axis=axis, keepdims=True))
 
 
 # ---------------------------------------------------------------------
@@ -377,14 +396,15 @@ def row_topk(M, k, largest=True):
         raise ValueError("M must be a numeric 2-dimensional array.")
     if arr.size == 0:
         raise ValueError("Input must not be empty.")
-    if np.isnan(arr.astype(np.float64)).any():
+    if arr.dtype.kind == "f" and np.isnan(arr).any():
         raise ValueError("M must not contain NaN.")
     if isinstance(k, bool) or not isinstance(k, (int, np.integer)) \
             or not 1 <= k <= arr.shape[1]:
         raise ValueError("k must be an integer between 1 and {}. Got: {!r}"
                          .format(arr.shape[1], k))
-    key = -arr.astype(np.float64) if largest else arr
-    return np.argsort(key, axis=1, kind="stable")[:, :int(k)]
+    # sorted in the array's own dtype: converting integers to float64 would make 2**53 and
+    # 2**53 + 1 equal
+    return _stable_argsort(arr, axis=1, descending=largest)[:, :int(k)]
 
 
 # ---------------------------------------------------------------------
@@ -418,12 +438,12 @@ def batch_indices(n, batch_size, shuffle=False, seed=0, drop_last=False):
     """
     n = _check_positive_int(n, "n")
     batch_size = _check_positive_int(batch_size, "batch_size")
-    order = np.random.default_rng(seed).permutation(n) if shuffle else np.arange(n)
+    order = np.random.default_rng(seed).permutation(n) if shuffle else None
     for start in range(0, n, batch_size):
-        chunk = order[start:start + batch_size]
-        if drop_last and chunk.size < batch_size:
+        stop = min(start + batch_size, n)
+        if drop_last and stop - start < batch_size:
             return
-        yield chunk
+        yield order[start:stop] if shuffle else np.arange(start, stop)
 
 
 def batches(*arrays, batch_size, shuffle=False, seed=0, drop_last=False):
@@ -445,8 +465,10 @@ def batches(*arrays, batch_size, shuffle=False, seed=0, drop_last=False):
 
     Complexity:
     ----------
-    - Time complexity: O(n) in total
-    - Space complexity: O(batch_size) per batch
+    - Time complexity: O(n * d) in total, where d is the number of values in one row of an array
+    - Space complexity: O(batch_size * d) per batch, because indexing with an array copies the
+    rows. With shuffle=True the shuffled index array adds O(n) once, and an input that is not
+    already a NumPy array is converted first, which costs O(n * d).
     """
     if not arrays:
         raise ValueError("At least one array is required.")

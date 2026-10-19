@@ -252,4 +252,3 @@ class TestRunningStats:
     def test_merge_wrong_type_raises(self):
         with pytest.raises(ValueError, match="Can only merge another RunningStats"):
             stats.RunningStats().merge([1.0, 2.0])
-            
