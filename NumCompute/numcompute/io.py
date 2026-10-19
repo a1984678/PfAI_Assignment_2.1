@@ -8,8 +8,10 @@ io.py
 - Return data as NumPy arrays
 """
 
-import numpy as np
+import warnings
 from os import path, PathLike
+
+import numpy as np
 
 
 def _classify_cells(file_path: str | PathLike[str], delimiter: str | None,
@@ -20,10 +22,14 @@ def _classify_cells(file_path: str | PathLike[str], delimiter: str | None,
     exactly one of number / text / missing. Blank, whitespace-only and literal
     'nan' cells are missing; anything else that doesn't parse as a float is text.
     """
-    as_float = np.genfromtxt(file_path, dtype=float, delimiter=delimiter,
-                             skip_header=skip_header, ndmin=2)
-    as_str = np.char.strip(np.genfromtxt(file_path, dtype=str, delimiter=delimiter,
-                                         skip_header=skip_header, ndmin=2))
+    # genfromtxt warns "Empty input file" when nothing is left after the header; load_csv
+    # handles that case itself by returning an empty array, so the warning is not needed.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        as_float = np.genfromtxt(file_path, dtype=float, delimiter=delimiter,
+                                 skip_header=skip_header, ndmin=2)
+        as_str = np.char.strip(np.genfromtxt(file_path, dtype=str, delimiter=delimiter,
+                                             skip_header=skip_header, ndmin=2))
 
     is_number = ~np.isnan(as_float)
     is_missing = (as_str == "") | (np.char.lower(as_str) == "nan")
@@ -32,7 +38,7 @@ def _classify_cells(file_path: str | PathLike[str], delimiter: str | None,
 
 
 def _describe_columns(cols, mask, as_str):
-    """"column 1 (row 2: 'NA')" for each column, using its first cell where mask is True."""
+    """Describe each column by its first cell where mask is True, e.g. "column 1 (row 2: 'NA')"."""
     rows = mask[:, cols].argmax(axis=0)
     return ", ".join(f"column {c} (row {r}: {str(as_str[r, c])!r})" for c, r in zip(cols, rows))
 
@@ -41,8 +47,9 @@ def _fill_kind(fill_value) -> str:
     """'number', 'text' or 'missing' (a NaN fill); anything else can't go in a CSV cell."""
     if isinstance(fill_value, str):
         return "text"
-    if (isinstance(fill_value, (int, float, np.integer, np.floating)) and
-        not isinstance(fill_value, bool)):
+    is_number = (isinstance(fill_value, (int, float, np.integer, np.floating))
+                 and not isinstance(fill_value, bool))
+    if is_number:
         return "missing" if np.isnan(fill_value) else "number"
     raise TypeError(
         f"fill_value must be a number or a string, got {type(fill_value).__name__}"
@@ -70,7 +77,8 @@ def load_csv(file_path, delimiter=',', missing="fill", fill_value=np.nan,
     - with dtype=float, a float64 array
     - with dtype=object, numbers are Python floats, text cells are Python strs,
     and filled cells hold fill_value as given
-    - on empty files, returns an empty array with shape (0, 0)
+    - on empty files, blank-only files and files with nothing after skip_header, returns an
+    empty array with shape (0, 0)
     - on skipping rows, returns an array with shape (n_rows, n_columns) where n_rows
     is the number of complete rows
     - on filling missing values, returns an array with shape (n_rows, n_columns) where n_rows
@@ -118,6 +126,11 @@ def load_csv(file_path, delimiter=',', missing="fill", fill_value=np.nan,
     as_float, as_str, is_number, is_text, is_missing = _classify_cells(
         file_path, delimiter, skip_header
     )
+
+    # Blank-only files, or files with nothing after the skipped header lines
+    if as_float.size == 0:
+        return np.empty((0, 0), dtype=dtype)
+
     has_text = is_text.any(axis=0)
     has_number = is_number.any(axis=0)
 

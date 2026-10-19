@@ -261,4 +261,3 @@ class TestBinarySearch:
     def test_incomparable_value_raises(self):
         with pytest.raises(ValueError, match="cannot be compared"):
             sort_search.binary_search([1, 2, 3], "a")
-            

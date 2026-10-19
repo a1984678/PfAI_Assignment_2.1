@@ -1,8 +1,6 @@
 import numpy as np
 import pytest
 
-from numcompute import io
-
 
 # ---------------------------------------------------------------------
 # Basic / expected behaviour
@@ -24,7 +22,8 @@ def test_known_output():
 
 def test_empty_array():
     x = np.array([])
-    pass
+    assert x.size == 0
+
 
 # ---------------------------------------------------------------------
 # Error handling
@@ -32,6 +31,5 @@ def test_empty_array():
 
 def test_invalid_input_type_raises():
     with pytest.raises(TypeError):
-        if not isinstance('a',int):
+        if not isinstance('a', int):
             raise TypeError("'a' is not an int")
-        pass

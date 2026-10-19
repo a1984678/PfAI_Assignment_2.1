@@ -285,8 +285,9 @@ def quantile(x, q, axis=None, skipna=True):
 
     Note:
     ----
-    - For a slice with N valid values the position is q * (N - 1); results between two
-    sorted values are linearly interpolated.
+     - For a slice with N valid values the position is q * (N - 1); results between two
+    sorted values are linearly interpolated, written so that huge values (e.g. -1e308 and
+    1e308) do not overflow.
     - NaN values sort to the end, so counting the valid values tells us where to look.
     - A slice that is entirely NaN gives NaN.
     """
@@ -315,7 +316,9 @@ def quantile(x, q, axis=None, skipna=True):
     lower = np.take_along_axis(sorted_data, lower_idx, axis=-1)
     upper = np.take_along_axis(sorted_data, upper_idx, axis=-1)
     frac = pos - np.floor(pos)
-    result = np.where(upper == lower, lower, lower + frac * (upper - lower))
+    # lower * (1 - frac) + upper * frac, not lower + frac * (upper - lower): the subtraction
+    # overflows to inf for values like -1e308 and 1e308, even though the answer is finite
+    result = np.where(upper == lower, lower, lower * (1.0 - frac) + upper * frac)
 
     result = np.where(n_valid == 0, np.nan, result)
     if not skipna:
@@ -606,5 +609,3 @@ class RunningStats:
         - Time and space complexity: O(1)
         """
         return float(np.sqrt(self.variance(ddof)))
-
-    

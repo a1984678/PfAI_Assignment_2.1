@@ -90,6 +90,7 @@ class MeanTargetEstimator(Estimator):
     def predict(self, X):
         return np.sum(X, axis=1) + self.y_mean_
 
+
 class DummyTransformer(Transformer):
     """Adds the mean of y to each feature."""
 
