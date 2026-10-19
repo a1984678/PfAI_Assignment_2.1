@@ -278,14 +278,16 @@ class OneHotEncoder(Transformer):
 
     Note:
     ----
-    - Categories may be numbers or strings. Input that cannot be converted to float64 is kept
-    as an object array (e.g. the output of load_csv with dtype=object).
+    - Categories may be numbers or strings. Every value is kept exactly as given: numbers stay
+    numbers (integers are not converted to float64, which would merge 2**53 and 2**53 + 1) and
+    strings stay strings, so a string such as "1" is never confused with the number 1.
+    An object array (e.g. the output of load_csv with dtype=object) is also accepted.
     - Each column must contain either only numbers or only strings (NaN is allowed in both).
     - NaN values are treated as a separate category.
     - If a feature has the same value for all samples, it will be transformed to a single
     column of ones.
     - The order of the categories in the output will be the same as the order of the unique
-    categories found during fit this is ascending with NaN values placed at the end.
+    categories found during fit; this is ascending with NaN values placed at the end.
     - The output will be a binary array where each column corresponds to a unique category,
     and the value will be 1 if the sample belongs to that category and 0 otherwise.
     """
@@ -296,13 +298,20 @@ class OneHotEncoder(Transformer):
     @staticmethod
     def _as_array(X):
         """
-        Convert X to a float64 array if possible, otherwise to an object array so strings
-        are kept.
+        Convert X to an array without changing any value.
+
+        Numbers keep their own dtype (int stays int, so large integers are not rounded by a
+        float64 conversion). Strings and anything else (a list that mixes strings and numbers,
+        a ragged list) become an object array, so every value keeps its own type: NumPy would
+        otherwise turn a list such as [1, "a"] into the strings "1" and "a".
         """
         try:
-            return np.asarray(X, dtype=np.float64)
-        except (ValueError, TypeError):
+            arr = np.asarray(X)
+        except ValueError:
             return np.asarray(X, dtype=object)
+        if arr.dtype.kind in "biuf" or (arr.dtype.kind == "U" and isinstance(X, np.ndarray)):
+            return arr
+        return np.asarray(X, dtype=object)
 
     @staticmethod
     def _unique(col):
@@ -317,12 +326,12 @@ class OneHotEncoder(Transformer):
         is_nan = col != col
         values = col[~is_nan]
 
-        if col.dtype == object:
-            is_str = np.array([isinstance(v, str) for v in values], dtype=bool)
-            if np.any(is_str) and not np.all(is_str):
-                raise TypeError("Mixed types in columns, use all numbers or all strings.")
-
-        categories = np.unique(values)
+        # np.unique sorts, and sorting a column that mixes strings and numbers raises TypeError.
+        # Using that error avoids checking the type of every value in a Python loop.
+        try:
+            categories = np.unique(values)
+        except TypeError:
+            raise TypeError("Mixed types in columns, use all numbers or all strings.") from None
 
         if np.any(is_nan):
             categories = np.append(categories, np.nan)
