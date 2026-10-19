@@ -18,8 +18,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = ["bench_metrics_optim_stats.py", "bench_rank_sort_utils.py"]
 HEADER = (
     "# NumCompute benchmark results\n\n"
-    "Produced by `python benchmark/run_all.py`. Timings depend on the machine, so compare the\n"
-    "ratios, not the milliseconds.\n\n"
+    "Produced by `python benchmark/run_all.py`. Both the timings and the speed-up ratios depend\n"
+    "on the machine, the Python and NumPy versions, and the input sizes used here.\n\n"
 )
 
 

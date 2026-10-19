@@ -183,7 +183,8 @@ def run_quickselect(quick):
     print()
     print("`quickselect` is slower than `np.sort` because NumPy's sort is compiled C, while the")
     print("partition loop in `quickselect` runs in Python. It is included to show the algorithm.")
-    print("For real work `np.partition` (used inside `topk`) is the right tool.")
+    print("For real work, NumPy's partition functions are the right tool: `topk` uses")
+    print("`np.argpartition`, and `np.partition` is the matching function for values.")
 
 
 def main():
