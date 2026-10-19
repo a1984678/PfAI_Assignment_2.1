@@ -3,9 +3,10 @@ bench_metrics_optim_stats.py
 
 Reproducible benchmarks for numcompute.metrics, numcompute.optim and numcompute.stats.
 
-Each benchmark compares a plain-Python loop baseline against the vectorised
-numcompute version (and NumPy's own function where one exists), checks that all
-versions give the same answer, then reports the median time over several runs.
+Each benchmark compares a plain-Python loop baseline against the numcompute version
+(and NumPy's own function where one exists), checks that all versions give the same
+answer, then reports the median time over several runs. The timing itself comes from
+numcompute.benchmarking.
 
 Run from the NumCompute folder:
 
@@ -20,16 +21,14 @@ Reproducibility:
 
 import argparse
 import os
-import platform
 import sys
-import time
 
 import numpy as np
 
 # make `import numcompute` work when run as `python benchmark/...` from NumCompute/
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from numcompute import metrics, optim, stats  # noqa: E402
+from numcompute import benchmarking, metrics, optim, stats  # noqa: E402
 
 SEED = 5004
 REPEATS = 5
@@ -41,7 +40,7 @@ REPEATS = 5
 
 def time_it(func, repeats=REPEATS):
     """
-    Median wall-clock time of func() in seconds, after one warm-up call.
+    Median wall-clock time of func() in seconds, plus the result of one call.
 
     Parameters:
     ----------
@@ -50,15 +49,26 @@ def time_it(func, repeats=REPEATS):
 
     Returns:
     -------
-    - (median_seconds, result of the last call)
+    - (median_seconds, result)
+
+    Note:
+    ----
+    - The first call is the warm-up and also gives the result to check, so the timing
+    itself is done by numcompute.benchmarking.time_it with no further warm-up.
     """
-    result = func()  # warm-up (also gives us the result to check)
-    times = []
-    for _ in range(repeats):
-        start = time.perf_counter()
-        result = func()
-        times.append(time.perf_counter() - start)
-    return float(np.median(times)), result
+    result = func()
+    return benchmarking.time_it(func, repeats=repeats, warmup=0), result
+
+
+def check(ok, what):
+    """Stop the benchmark if two versions disagree (an assert would be skipped by python -O)."""
+    if not ok:
+        raise RuntimeError("Versions give different results: " + what)
+
+
+def fmt_speedup(ratio):
+    """'4.2x' or '0.8x (slower)': one decimal, so a slowdown is not rounded to 1x."""
+    return "{:,.1f}x".format(ratio) + ("" if ratio >= 1 else " (slower)")
 
 
 def fmt_time(seconds):
@@ -172,14 +182,14 @@ def bench_speed(sizes):
     y_pred = np.where(rng.random(n) < 0.7, y_true, rng.integers(0, k, n))
     t_loop, r_loop = time_it(lambda: loop_confusion_matrix(y_true, y_pred, k))
     t_vec, r_vec = time_it(lambda: metrics.confusion_matrix(y_true, y_pred))
-    assert np.array_equal(r_loop, r_vec)
+    check(np.array_equal(r_loop, r_vec), "confusion_matrix")
     rows.append(("metrics.confusion_matrix", "n={:,}, 5 classes".format(n),
                  t_loop, t_vec, None))
 
     # 2. macro F1 ---------------------------------------------------------
     t_loop, r_loop = time_it(lambda: loop_macro_f1(y_true, y_pred, k))
     t_vec, r_vec = time_it(lambda: metrics.f1(y_true, y_pred, average="macro"))
-    assert np.isclose(r_loop, r_vec)
+    check(np.isclose(r_loop, r_vec), "f1 (macro)")
     rows.append(("metrics.f1 (macro)", "n={:,}, 5 classes".format(n),
                  t_loop, t_vec, None))
 
@@ -194,7 +204,7 @@ def bench_speed(sizes):
         return metrics.auc(fpr, tpr)
 
     t_vec, r_vec = time_it(vec_auc)
-    assert np.isclose(r_loop, r_vec)
+    check(np.isclose(r_loop, r_vec), "roc_curve + auc")
     rows.append(("metrics.roc_curve + auc", "n={:,}, with ties".format(n_auc),
                  t_loop, t_vec, None))
 
@@ -204,7 +214,7 @@ def bench_speed(sizes):
     t_loop, r_loop = time_it(lambda: loop_histogram(x.tolist(), 20))
     t_vec, (r_vec, _) = time_it(lambda: stats.histogram(x, bins=20))
     t_np, (r_np, _) = time_it(lambda: np.histogram(x, bins=20))
-    assert np.array_equal(r_vec, r_np) and np.array_equal(r_loop, r_np)
+    check(np.array_equal(r_vec, r_np) and np.array_equal(r_loop, r_np), "histogram")
     rows.append(("stats.histogram", "n={:,}, 20 bins".format(n_h),
                  t_loop, t_vec, t_np))
 
@@ -214,7 +224,7 @@ def bench_speed(sizes):
     t_loop, r_loop = time_it(lambda: loop_column_medians(x2d))
     t_vec, r_vec = time_it(lambda: stats.median(x2d, axis=0))
     t_np, r_np = time_it(lambda: np.median(x2d, axis=0))
-    assert np.allclose(r_loop, r_vec) and np.allclose(r_vec, r_np)
+    check(np.allclose(r_loop, r_vec) and np.allclose(r_vec, r_np), "median")
     rows.append(("stats.median (axis=0)", "{:,} x {:,}".format(r, c),
                  t_loop, t_vec, t_np))
 
@@ -230,12 +240,15 @@ def bench_speed(sizes):
 
     t_loop, r_loop = time_it(lambda: loop_welford(values))
     t_vec, r_vec = time_it(vec_stream)
-    t_np = time_it(lambda: (values.mean(), values.var()))[0]
-    assert np.allclose(r_loop, r_vec)
+    t_np, r_np = time_it(lambda: (values.mean(), values.var()))
+    check(np.allclose(r_loop, r_vec) and np.allclose(r_loop, r_np), "RunningStats")
     rows.append(("stats.RunningStats (100 chunks)", "n={:,}".format(n_s),
                  t_loop, t_vec, t_np))
 
     # 7. gradient cost ---------------------------------------------------------
+    # Both versions loop over the coordinates and call f the same number of times (f is a
+    # black box, so a loop is unavoidable). This row compares two implementations of the same
+    # loop, it is not a vectorisation result.
     dim = sizes["grad_dim"]
     xg = rng.normal(size=dim)
 
@@ -244,8 +257,9 @@ def bench_speed(sizes):
 
     t_loop, r_loop = time_it(lambda: loop_grad(f, xg, 1e-5))
     t_vec, r_vec = time_it(lambda: optim.grad(f, xg, method="forward"))
-    assert np.allclose(r_loop, r_vec, atol=1e-3)
-    rows.append(("optim.grad (forward)", "dim={}".format(dim), t_loop, t_vec, None))
+    check(np.allclose(r_loop, r_vec, atol=1e-3), "optim.grad")
+    rows.append(("optim.grad (forward)", "dim={}, same calls to f".format(dim),
+                 t_loop, t_vec, None))
 
     return rows
 
@@ -296,30 +310,40 @@ def main():
         sizes = {"n_labels": 200_000, "n_auc": 3_000, "n_hist": 500_000,
                  "median_shape": (2_000, 200), "n_stream": 500_000, "grad_dim": 200}
 
-    print("NumCompute benchmarks: metrics, optim, stats")
-    print("Python {} | NumPy {} | {} | seed {} | median of {} runs".format(
-        platform.python_version(), np.__version__, platform.platform(), SEED, REPEATS))
+    print("## NumCompute benchmarks: metrics, optim, stats")
+    print()
+    for key, value in benchmarking.environment_info().items():
+        print("- {}: {}".format(key, value))
+    print("- seed: {}, median of {} runs".format(SEED, REPEATS))
     print()
 
-    print("1) Speed: plain-Python loop vs numcompute (vectorised) vs NumPy")
+    print("### 1) Speed: plain-Python loop vs numcompute vs NumPy")
+    print()
     print("| Function | Input | Python loop | numcompute | NumPy | Speed-up vs loop |")
     print("|---|---|---|---|---|---|")
     for name, size, t_loop, t_vec, t_np in bench_speed(sizes):
-        print("| {} | {} | {} | {} | {} | {:,.0f}x |".format(
+        print("| {} | {} | {} | {} | {} | {} |".format(
             name, size, fmt_time(t_loop), fmt_time(t_vec),
-            fmt_time(t_np) if t_np is not None else "-", t_loop / t_vec))
+            fmt_time(t_np) if t_np is not None else "-", fmt_speedup(t_loop / t_vec)))
     print()
-    print("(The AUC loop is timed once: it is O(n^2). All versions were checked to agree.)")
+    print("All versions were checked to give the same answer before timing. The loop for")
+    print("confusion_matrix and f1 assumes the labels are the integers 0 to 4, while numcompute")
+    print("also validates the input and finds the labels itself (a sort), so a small speed-up or a")
+    print("slowdown is possible there. The AUC loop is O(n^2) and is timed once; the ROC version")
+    print("sorts instead, so its speed-up comes from a better algorithm as well as from NumPy.")
+    print("optim.grad is an implementation comparison: both versions loop over the coordinates.")
     print()
 
-    print("2) Numerical stability")
+    print("### 2) Numerical stability")
+    print()
     print("| Case | Result | True value |")
     print("|---|---|---|")
     for case, value, true in bench_stability():
         print("| {} | {:.6f} | {:.6f} |".format(case, value, true))
     print()
 
-    print("3) Finite-difference error for d/dx sin(x) at x = 1 (exact = cos 1)")
+    print("### 3) Finite-difference error for d/dx sin(x) at x = 1 (exact = cos 1)")
+    print()
     print("| h | central error | forward error |")
     print("|---|---|---|")
     for h, err_c, err_f in bench_grad_error():
