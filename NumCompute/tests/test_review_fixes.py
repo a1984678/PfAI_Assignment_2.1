@@ -133,10 +133,21 @@ class TestPreprocessing:
         enc = preprocessing.OneHotEncoder().fit(X)
         np.testing.assert_array_equal(enc.transform(X), [[0, 1, 0], [0, 0, 1], [1, 0, 0]])
 
-    def test_one_hot_column_mixing_numbers_and_text_raises(self):
-        X = np.array([[1], ["a"]], dtype=object)
+    @pytest.mark.parametrize("X", [[[1], ["a"]], [["a"], [1.5]],
+                                   np.array([[1], ["a"]], dtype=object)])
+    def test_one_hot_column_mixing_numbers_and_text_raises(self, X):
         with pytest.raises(TypeError, match="Mixed types"):
             preprocessing.OneHotEncoder().fit(X)
+
+    def test_one_hot_text_that_looks_like_a_number_stays_text(self):
+        """fit sees "red" so "1" is text; transform of "1" alone must still be text, not 1.0."""
+        enc = preprocessing.OneHotEncoder().fit([["red"], ["1"]])
+        np.testing.assert_array_equal(enc.transform([["1"]]), [[1, 0]])
+
+    def test_one_hot_keeps_distinct_large_integers_apart(self):
+        """float64 cannot tell 2**53 from 2**53 + 1; the encoder must."""
+        out = preprocessing.OneHotEncoder().fit_transform([[2 ** 53], [2 ** 53 + 1]])
+        np.testing.assert_array_equal(out, [[1, 0], [0, 1]])
 
 
 # ---------------------------------------------------------------------
