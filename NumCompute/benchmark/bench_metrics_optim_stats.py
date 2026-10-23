@@ -16,6 +16,7 @@ Run from the NumCompute folder:
 Reproducibility:
 - every input is generated from a fixed seed (SEED below)
 - each timing is the median of REPEATS runs, after one warm-up run
+  (the O(n^2) AUC loop is timed once)
 - Python, NumPy and platform versions are printed with the results
 """
 
@@ -35,35 +36,40 @@ REPEATS = 5
 
 
 # ---------------------------------------------------------------------
-# Timing helper
+# Timing helpers
 # ---------------------------------------------------------------------
-
-def time_it(func, repeats=REPEATS):
-    """
-    Median wall-clock time of func() in seconds, plus the result of one call.
-
-    Parameters:
-    ----------
-    - func: callable with no arguments
-    - repeats: int, number of timed runs
-
-    Returns:
-    -------
-    - (median_seconds, result)
-
-    Note:
-    ----
-    - The first call is the warm-up and also gives the result to check, so the timing
-    itself is done by numcompute.benchmarking.time_it with no further warm-up.
-    """
-    result = func()
-    return benchmarking.time_it(func, repeats=repeats, warmup=0), result
-
 
 def check(ok, what):
     """Stop the benchmark if two versions disagree (an assert would be skipped by python -O)."""
     if not ok:
         raise RuntimeError("Versions give different results: " + what)
+
+
+def check_then_time(what, agree, *funcs, repeats=None):
+    """
+    Run every version once, stop if their results disagree, then time each version.
+
+    Parameters:
+    ----------
+    - what: str, name used in the error message
+    - agree: callable taking one result per version, True when the results match
+    - funcs: callables with no arguments, one per version
+    - repeats: list of timed runs per version (default REPEATS for each)
+
+    Returns:
+    -------
+    - list of median seconds, one per version, in the order of funcs
+
+    Note:
+    ----
+    - The first call of each version is the warm-up and gives the result to check, so the
+    correctness check always happens before any timing, and numcompute.benchmarking.time_it
+    then runs with no further warm-up.
+    """
+    results = [func() for func in funcs]
+    check(agree(*results), what)
+    repeats = repeats or [REPEATS] * len(funcs)
+    return [benchmarking.time_it(func, repeats=r, warmup=0) for func, r in zip(funcs, repeats)]
 
 
 def fmt_speedup(ratio):
@@ -180,51 +186,58 @@ def bench_speed(sizes):
     n, k = sizes["n_labels"], 5
     y_true = rng.integers(0, k, n)
     y_pred = np.where(rng.random(n) < 0.7, y_true, rng.integers(0, k, n))
-    t_loop, r_loop = time_it(lambda: loop_confusion_matrix(y_true, y_pred, k))
-    t_vec, r_vec = time_it(lambda: metrics.confusion_matrix(y_true, y_pred))
-    check(np.array_equal(r_loop, r_vec), "confusion_matrix")
+    t_loop, t_vec = check_then_time(
+        "confusion_matrix", np.array_equal,
+        lambda: loop_confusion_matrix(y_true, y_pred, k),
+        lambda: metrics.confusion_matrix(y_true, y_pred))
     rows.append(("metrics.confusion_matrix", "n={:,}, 5 classes".format(n),
                  t_loop, t_vec, None))
 
     # 2. macro F1 ---------------------------------------------------------
-    t_loop, r_loop = time_it(lambda: loop_macro_f1(y_true, y_pred, k))
-    t_vec, r_vec = time_it(lambda: metrics.f1(y_true, y_pred, average="macro"))
-    check(np.isclose(r_loop, r_vec), "f1 (macro)")
+    t_loop, t_vec = check_then_time(
+        "f1 (macro)", np.isclose,
+        lambda: loop_macro_f1(y_true, y_pred, k),
+        lambda: metrics.f1(y_true, y_pred, average="macro"))
     rows.append(("metrics.f1 (macro)", "n={:,}, 5 classes".format(n),
                  t_loop, t_vec, None))
 
-    # 3. AUC --------------------------------------------------------------
+    # 3. AUC (the O(n^2) loop is timed once) -------------------------------
     n_auc = sizes["n_auc"]
     yb = rng.integers(0, 2, n_auc)
     score = np.round(yb * 0.6 + rng.random(n_auc), 2)  # rounding creates ties
-    t_loop, r_loop = time_it(lambda: loop_auc(yb, score), repeats=1)
 
     def vec_auc():
         fpr, tpr, _ = metrics.roc_curve(yb, score)
         return metrics.auc(fpr, tpr)
 
-    t_vec, r_vec = time_it(vec_auc)
-    check(np.isclose(r_loop, r_vec), "roc_curve + auc")
+    t_loop, t_vec = check_then_time(
+        "roc_curve + auc", np.isclose,
+        lambda: loop_auc(yb, score), vec_auc, repeats=[1, REPEATS])
     rows.append(("metrics.roc_curve + auc", "n={:,}, with ties".format(n_auc),
                  t_loop, t_vec, None))
 
     # 4. histogram --------------------------------------------------------
     n_h = sizes["n_hist"]
     x = rng.normal(size=n_h)
-    t_loop, r_loop = time_it(lambda: loop_histogram(x.tolist(), 20))
-    t_vec, (r_vec, _) = time_it(lambda: stats.histogram(x, bins=20))
-    t_np, (r_np, _) = time_it(lambda: np.histogram(x, bins=20))
-    check(np.array_equal(r_vec, r_np) and np.array_equal(r_loop, r_np), "histogram")
+    t_loop, t_vec, t_np = check_then_time(
+        "histogram",
+        lambda r_loop, r_vec, r_np: (np.array_equal(r_vec[0], r_np[0])
+                                     and np.array_equal(r_loop, r_np[0])),
+        lambda: loop_histogram(x.tolist(), 20),
+        lambda: stats.histogram(x, bins=20),
+        lambda: np.histogram(x, bins=20))
     rows.append(("stats.histogram", "n={:,}, 20 bins".format(n_h),
                  t_loop, t_vec, t_np))
 
     # 5. axis-wise median ---------------------------------------------------
     r, c = sizes["median_shape"]
     x2d = rng.normal(size=(r, c))
-    t_loop, r_loop = time_it(lambda: loop_column_medians(x2d))
-    t_vec, r_vec = time_it(lambda: stats.median(x2d, axis=0))
-    t_np, r_np = time_it(lambda: np.median(x2d, axis=0))
-    check(np.allclose(r_loop, r_vec) and np.allclose(r_vec, r_np), "median")
+    t_loop, t_vec, t_np = check_then_time(
+        "median",
+        lambda r_loop, r_vec, r_np: np.allclose(r_loop, r_vec) and np.allclose(r_vec, r_np),
+        lambda: loop_column_medians(x2d),
+        lambda: stats.median(x2d, axis=0),
+        lambda: np.median(x2d, axis=0))
     rows.append(("stats.median (axis=0)", "{:,} x {:,}".format(r, c),
                  t_loop, t_vec, t_np))
 
@@ -238,10 +251,11 @@ def bench_speed(sizes):
             rs.update(chunk)
         return rs.mean, rs.variance()
 
-    t_loop, r_loop = time_it(lambda: loop_welford(values))
-    t_vec, r_vec = time_it(vec_stream)
-    t_np, r_np = time_it(lambda: (values.mean(), values.var()))
-    check(np.allclose(r_loop, r_vec) and np.allclose(r_loop, r_np), "RunningStats")
+    t_loop, t_vec, t_np = check_then_time(
+        "RunningStats",
+        lambda r_loop, r_vec, r_np: np.allclose(r_loop, r_vec) and np.allclose(r_loop, r_np),
+        lambda: loop_welford(values), vec_stream,
+        lambda: (values.mean(), values.var()))
     rows.append(("stats.RunningStats (100 chunks)", "n={:,}".format(n_s),
                  t_loop, t_vec, t_np))
 
@@ -255,9 +269,10 @@ def bench_speed(sizes):
     def f(v):
         return float(np.sum(v ** 2))
 
-    t_loop, r_loop = time_it(lambda: loop_grad(f, xg, 1e-5))
-    t_vec, r_vec = time_it(lambda: optim.grad(f, xg, method="forward"))
-    check(np.allclose(r_loop, r_vec, atol=1e-3), "optim.grad")
+    t_loop, t_vec = check_then_time(
+        "optim.grad", lambda a, b: np.allclose(a, b, atol=1e-3),
+        lambda: loop_grad(f, xg, 1e-5),
+        lambda: optim.grad(f, xg, method="forward"))
     rows.append(("optim.grad (forward)", "dim={}, same calls to f".format(dim),
                  t_loop, t_vec, None))
 
@@ -314,7 +329,7 @@ def main():
     print()
     for key, value in benchmarking.environment_info().items():
         print("- {}: {}".format(key, value))
-    print("- seed: {}, median of {} runs".format(SEED, REPEATS))
+    print("- seed: {}, median of {} runs (the AUC loop is timed once)".format(SEED, REPEATS))
     print()
 
     print("### 1) Speed: plain-Python loop vs numcompute vs NumPy")

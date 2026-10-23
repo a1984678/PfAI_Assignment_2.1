@@ -78,8 +78,15 @@ class StandardScaler(Transformer):
         if np.any(np.all(np.isnan(X), axis=0)):
             raise ValueError("Cannot fit StandardScaler on a column with all NaN values.")
 
-        # nanmean and nanstd ignore NaN values
-        self.mean_ = np.nanmean(X, axis=0)
+        # nanmean and nanstd ignore NaN values. Summing very large values overflows (1e308 +
+        # 1e308 is inf), so where the plain mean is not finite, the mean is taken of the column
+        # divided by its largest absolute value, and that peak is multiplied back in.
+        with np.errstate(over="ignore"):
+            self.mean_ = np.nanmean(X, axis=0)
+        overflowed = ~np.isfinite(self.mean_)
+        if np.any(overflowed):
+            col_peak = np.nanmax(np.abs(X[:, overflowed]), axis=0)
+            self.mean_[overflowed] = col_peak * np.nanmean(X[:, overflowed] / col_peak, axis=0)
 
         # Squaring very large or very small deviations overflows or underflows (1e200 ** 2 is
         # inf, 1e-200 ** 2 is 0). So divide the deviations by their largest absolute value first,
@@ -88,8 +95,9 @@ class StandardScaler(Transformer):
         peak = np.nanmax(np.abs(deviations), axis=0)
 
         # A constant column has no spread: use a scale of 1 so it maps to 0 and not 0 / 0.
-        # The check uses max - min because the mean of equal floats can differ in the last digit.
-        is_constant = (np.nanmax(X, axis=0) - np.nanmin(X, axis=0)) == 0
+        # The check compares max and min, because the mean of equal floats can differ in the
+        # last digit, and comparing them (not subtracting) cannot overflow.
+        is_constant = np.nanmax(X, axis=0) == np.nanmin(X, axis=0)
         safe_peak = np.where(is_constant | (peak == 0), 1.0, peak)
 
         self.scale_ = safe_peak * np.nanstd(deviations / safe_peak, axis=0)
@@ -218,13 +226,17 @@ class MinMaxScaler(Transformer):
 
         self.min_ = np.nanmin(X, axis=0)
         self.max_ = np.nanmax(X, axis=0)
-        self.range_ = self.max_ - self.min_
 
-        # Replace zero ranges before dividing, so no inf is produced
-        is_constant = self.range_ == 0
-        safe_range = np.where(is_constant, 1.0, self.range_)
+        # max - min overflows to inf for a range like -1e308 to 1e308, so work with half the
+        # range. Halving is exact in floating point, so normal data gives the same result.
+        half_range = self.max_ / 2 - self.min_ / 2
 
-        self.scale_ = (self.feature_range[1] - self.feature_range[0]) / safe_range
+        # Replace zero ranges before dividing, so no inf is produced (a range of 1 is used)
+        is_constant = half_range == 0
+        safe_half_range = np.where(is_constant, 0.5, half_range)
+
+        # scale_ is (high - low) / (max - min), written so that max - min is never formed
+        self.scale_ = (self.feature_range[1] - self.feature_range[0]) / 2 / safe_half_range
 
         return self
 
@@ -257,7 +269,8 @@ class MinMaxScaler(Transformer):
         if X.shape[1] != self.min_.shape[0]:
             raise ValueError("Incompatible dimensionality.")
 
-        return (X - self.min_) * self.scale_ + self.feature_range[0]
+        # (X - min_) * scale_, with both factors halved and doubled so X - min_ cannot overflow
+        return (X / 2 - self.min_ / 2) * (2 * self.scale_) + self.feature_range[0]
 
 
 class OneHotEncoder(Transformer):
@@ -278,10 +291,13 @@ class OneHotEncoder(Transformer):
 
     Note:
     ----
-    - Categories may be numbers or strings. Every value is kept exactly as given: numbers stay
-    numbers (integers are not converted to float64, which would merge 2**53 and 2**53 + 1) and
-    strings stay strings, so a string such as "1" is never confused with the number 1.
-    An object array (e.g. the output of load_csv with dtype=object) is also accepted.
+    - Categories may be numbers or strings. Integer input keeps its integer dtype, so 2**53 and
+    2**53 + 1 stay separate categories. A list that mixes integers and floats is kept as an
+    object array when converting it to float64 would change any value. Strings stay strings,
+    so a string such as "1" is never confused with the number 1. An object array (e.g. the
+    output of load_csv with dtype=object) is also accepted.
+    - A NumPy float array is used as it is. If large integers were already stored as float64
+    before reaching the encoder, values that float64 cannot tell apart become one category.
     - Each column must contain either only numbers or only strings (NaN is allowed in both).
     - NaN values are treated as a separate category.
     - If a feature has the same value for all samples, it will be transformed to a single
@@ -298,17 +314,26 @@ class OneHotEncoder(Transformer):
     @staticmethod
     def _as_array(X):
         """
-        Convert X to an array without changing any value.
+        Convert X to an array without changing the values in a list.
 
         Numbers keep their own dtype (int stays int, so large integers are not rounded by a
-        float64 conversion). Strings and anything else (a list that mixes strings and numbers,
-        a ragged list) become an object array, so every value keeps its own type: NumPy would
-        otherwise turn a list such as [1, "a"] into the strings "1" and "a".
+        float64 conversion). A list that mixes integers and floats would become float64, so
+        it is kept as an object array when that conversion changes any value (2**53 + 1
+        becomes 2**53 in float64). Strings and anything else (a list that mixes strings and
+        numbers, a ragged list) become an object array, as NumPy would otherwise turn a list
+        such as [1, "a"] into the strings "1" and "a". A NumPy array that is already numeric
+        is used as it is.
         """
         try:
             arr = np.asarray(X)
         except ValueError:
             return np.asarray(X, dtype=object)
+        if arr.dtype.kind == "f" and not isinstance(X, np.ndarray):
+            # Compare each original value with its float64 copy. Python compares int and
+            # float exactly, so a rounded integer shows up as a mismatch (NaN is allowed).
+            original = np.asarray(X, dtype=object)
+            if not np.all((original == arr) | (arr != arr)):
+                return original
         if arr.dtype.kind in "biuf" or (arr.dtype.kind == "U" and isinstance(X, np.ndarray)):
             return arr
         return np.asarray(X, dtype=object)

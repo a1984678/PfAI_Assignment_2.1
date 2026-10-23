@@ -103,6 +103,20 @@ class TestPreprocessing:
         out = preprocessing.StandardScaler().fit_transform(X)
         np.testing.assert_allclose(out[:, 0], [-np.sqrt(1.5), 0.0, np.sqrt(1.5)], atol=1e-12)
 
+    def test_standard_scaler_huge_constant_column_gives_zeros(self):
+        """The mean of [1e308, 1e308] summed to inf, so the output was -inf."""
+        out = preprocessing.StandardScaler().fit_transform([[1e308], [1e308]])
+        np.testing.assert_array_equal(out, [[0.0], [0.0]])
+
+    def test_standard_scaler_huge_opposite_values(self):
+        out = preprocessing.StandardScaler().fit_transform([[-1e308], [1e308]])
+        np.testing.assert_allclose(out, [[-1.0], [1.0]])
+
+    def test_minmax_range_wider_than_float_max(self):
+        """max - min of -1e308 and 1e308 overflowed, so the output was [0, nan]."""
+        out = preprocessing.MinMaxScaler().fit_transform([[-1e308], [1e308]])
+        np.testing.assert_allclose(out, [[0.0], [1.0]])
+
     @pytest.mark.parametrize("feature_range", [(0, np.nan), (0, np.inf), (-np.inf, 1)])
     def test_minmax_non_finite_range_raises(self, feature_range):
         with pytest.raises(ValueError, match="finite"):
@@ -148,6 +162,13 @@ class TestPreprocessing:
         """float64 cannot tell 2**53 from 2**53 + 1; the encoder must."""
         out = preprocessing.OneHotEncoder().fit_transform([[2 ** 53], [2 ** 53 + 1]])
         np.testing.assert_array_equal(out, [[1, 0], [0, 1]])
+
+    def test_one_hot_large_integers_stay_apart_when_floats_are_present(self):
+        """A float in the list made NumPy convert everything to float64 and merge the integers."""
+        enc = preprocessing.OneHotEncoder().fit([[2 ** 53], [2 ** 53 + 1], [0.5]])
+        assert len(enc.categories_[0]) == 3
+        np.testing.assert_array_equal(enc.transform([[2 ** 53], [2 ** 53 + 1], [0.5]]),
+                                      [[0, 1, 0], [0, 0, 1], [1, 0, 0]])
 
 
 # ---------------------------------------------------------------------
