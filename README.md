@@ -1,11 +1,13 @@
 # Assignment 2.1: Programming Task 1
+
+For getting up and running please open [README](./NumCompute/README.md)
  
-**Course:** 2650_COMP_5004_2 — 2026 Semester 2
-**Due:** Monday, 26 Oct 2026, 9:00 am (Monday after Mid-Semester Break)
-**Available from:** 3 Aug 2026, 9:00 am
-**Weighting:** 30%
-**Type:** Group work (team of 3–4)
-**Points:** 30 (ungraded / unlimited attempts allowed)
+- **Course:** 2650_COMP_5004_2 — 2026 Semester 2
+- **Due:** Monday, 26 Oct 2026, 9:00 am (Monday after Mid-Semester Break)
+- **Available from:** 3 Aug 2026, 9:00 am
+- **Weighting:** 30%
+- **Type:** Group work (team of 3–4)
+- **Points:** 30 (ungraded / unlimited attempts allowed)
  
 ## NumCompute: A High-Performance NumPy Toolkit (Week 1–6)
  
