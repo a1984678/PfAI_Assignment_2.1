@@ -16,4 +16,8 @@ stats         : Chunk-based statistics
 metrics       : Streaming classification metrics
 pipeline      : Chained pipeline supporting partial_fit
 visualise     : Reusable matplotlib plotting functions
+
+Baseline modules carried over from NumCompute (Assignment 2.1)
+--------------------------------------------------------------
+rank, sort_search, optim, utils, benchmarking
 """
