@@ -167,3 +167,28 @@ def load_csv(file_path, delimiter=',', missing="fill", fill_value=np.nan,
             )
 
     return np.where(is_missing, fill_value, data)
+
+
+def iter_chunks(X, y=None, *, chunk_size, shuffle=False, seed=0):
+    """
+    Split a dataset into chunks to simulate a data stream.
+
+    Stub: not implemented yet (tests in tests/test_io.py define the behaviour).
+
+    Parameters:
+    ----------
+    - X: array-like of shape (n_samples, n_features)
+    - y: array-like of shape (n_samples,) or None (default None)
+    - chunk_size: int >= 1, rows per chunk; the last chunk may be shorter
+    - shuffle: bool, shuffle rows once before chunking (default False)
+    - seed: int, random seed used when shuffle=True (default 0)
+
+    Yields:
+    ------
+    - (X_chunk, y_chunk) if y is given, otherwise X_chunk
+
+    Raises:
+    ------
+    - NotImplementedError: always, until implemented
+    """
+    raise NotImplementedError("iter_chunks is not implemented yet")
