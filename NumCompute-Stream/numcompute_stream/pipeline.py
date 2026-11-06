@@ -38,7 +38,15 @@ class Transformer:
     - fit(X, y=None) -> self
     - transform(X) -> X_out
     - fit_transform(X, y=None) -> X_out
+    - partial_fit(X, y=None) -> self (optional, streaming)
+
+    Attributes:
+    ----------
+    - supports_partial_fit: bool class attribute, False here. Subclasses that implement
+    partial_fit set it to True so a Pipeline can check streaming support up front.
     """
+
+    supports_partial_fit = False
 
     def __init__(self):
         pass
@@ -61,6 +69,30 @@ class Transformer:
         - NotImplementedError: if the subclass does not override fit
         """
         raise NotImplementedError
+
+    def partial_fit(self, X, y=None):
+        """
+        Update the fitted parameters with one chunk of data (streaming).
+
+        Unlike fit, repeated calls accumulate: each call updates the state learned from
+        earlier chunks instead of starting again.
+
+        Parameters:
+        ----------
+        - X: array-like of shape (n_samples, n_features), one chunk of the stream
+        - y: array-like of shape (n_samples,), ignored by most transformers (default None)
+
+        Returns:
+        -------
+        - self: object
+
+        Raises:
+        ------
+        - NotImplementedError: if the subclass does not support streaming updates
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support partial_fit"
+        )
 
     def transform(self, X):
         """
@@ -111,7 +143,15 @@ class Estimator:
     ----
     - fit(X, y=None) -> self
     - predict(X) -> y_pred
+    - partial_fit(X, y=None) -> self (optional, streaming)
+
+    Attributes:
+    ----------
+    - supports_partial_fit: bool class attribute, False here. Subclasses that implement
+    partial_fit set it to True so a Pipeline can check streaming support up front.
     """
+
+    supports_partial_fit = False
 
     def __init__(self):
         pass
@@ -134,6 +174,30 @@ class Estimator:
         - NotImplementedError: if the subclass does not override fit
         """
         raise NotImplementedError
+
+    def partial_fit(self, X, y=None):
+        """
+        Update the model with one chunk of data (streaming).
+
+        Unlike fit, repeated calls accumulate: each call updates the state learned from
+        earlier chunks instead of starting again.
+
+        Parameters:
+        ----------
+        - X: array-like of shape (n_samples, n_features), one chunk of the stream
+        - y: array-like of shape (n_samples,), target values for the chunk (default None)
+
+        Returns:
+        -------
+        - self: object
+
+        Raises:
+        ------
+        - NotImplementedError: if the subclass does not support streaming updates
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support partial_fit"
+        )
 
     def predict(self, X):
         """
