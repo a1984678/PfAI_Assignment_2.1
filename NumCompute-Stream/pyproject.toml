@@ -13,6 +13,14 @@ dependencies = [
 filterwarnings = ["error"]
 testpaths = ["tests"]
 
+[tool.coverage.run]
+source = ["numcompute_stream"]
+branch = true
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
