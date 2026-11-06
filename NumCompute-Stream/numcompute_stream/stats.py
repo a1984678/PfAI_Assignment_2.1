@@ -618,3 +618,43 @@ class RunningStats:
         - Time and space complexity: O(1)
         """
         return float(np.sqrt(self.variance(ddof)))
+
+
+class StreamingStats:
+    """
+    Per-feature streaming count, mean, variance, std, min and max.
+
+    Stub: not implemented yet (tests in tests/test_stats.py define the behaviour).
+
+    Feed 2-D chunks of shape (n_samples, n_features) with ``update_stats``; every result
+    is an array of shape (n_features,), one value per column (axis 0 is reduced).
+
+    Attributes:
+    ----------
+    - n_features: int, or None before the first chunk
+    - count: np.ndarray (n_features,), non-NaN values seen per column
+    - mean, min, max: np.ndarray (n_features,), NaN for a column with no values yet
+
+    Raises:
+    ------
+    - RuntimeError: reading a result before any data has been seen
+    """
+
+    def __init__(self):
+        raise NotImplementedError("StreamingStats is not implemented yet")
+
+    def update_stats(self, X_chunk):
+        """Add one chunk of shape (n_samples, n_features); returns self."""
+        raise NotImplementedError("StreamingStats is not implemented yet")
+
+    def merge(self, other):
+        """Combine another StreamingStats with the same n_features; returns self."""
+        raise NotImplementedError("StreamingStats is not implemented yet")
+
+    def variance(self, ddof=0):
+        """Per-feature variance, divisor count - ddof; NaN where count - ddof <= 0."""
+        raise NotImplementedError("StreamingStats is not implemented yet")
+
+    def std(self, ddof=0):
+        """Per-feature standard deviation: sqrt(variance(ddof))."""
+        raise NotImplementedError("StreamingStats is not implemented yet")
