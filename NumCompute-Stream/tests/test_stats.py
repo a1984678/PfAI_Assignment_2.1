@@ -88,11 +88,19 @@ def test_zero_variance_column_is_exactly_zero():
 
 
 def test_large_offset_is_numerically_stable():
-    """Values near 1e9 with spread 1: naive sum-of-squares would lose all precision."""
+    """Values near 1e9 with spread 1: naive sum-of-squares would lose all precision.
+
+    float64 spacing near 1e9 is ~1.2e-7, so each chunk mean carries ~1e-7 rounding and
+    a relative error around 1e-8 is the floor for any streaming method; rtol=1e-6 leaves
+    margin while the naive formula is wrong by orders of magnitude.
+    """
     rng = np.random.default_rng(1)
     X = 1e9 + rng.normal(size=(1000, 1))
     s = _stream(X, 13)
-    np.testing.assert_allclose(s.variance(), X.var(axis=0), rtol=1e-9)
+    np.testing.assert_allclose(s.variance(), X.var(axis=0), rtol=1e-6)
+
+    naive = np.mean(X ** 2, axis=0) - np.mean(X, axis=0) ** 2
+    assert not np.allclose(naive, X.var(axis=0), rtol=1e-2)
 
 
 def test_merge_equals_stats_on_concatenated_data():

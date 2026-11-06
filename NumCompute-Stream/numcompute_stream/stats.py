@@ -22,6 +22,8 @@ import warnings
 
 import numpy as np
 
+from ._validation import check_array, check_n_features
+
 
 # ---------------------------------------------------------------------
 # Shared helpers
@@ -624,37 +626,222 @@ class StreamingStats:
     """
     Per-feature streaming count, mean, variance, std, min and max.
 
-    Stub: not implemented yet (tests in tests/test_stats.py define the behaviour).
-
     Feed 2-D chunks of shape (n_samples, n_features) with ``update_stats``; every result
-    is an array of shape (n_features,), one value per column (axis 0 is reduced).
+    is an array of shape (n_features,), one value per column (axis 0 is reduced). The data
+    itself is never stored.
+
+    Algorithm: each chunk is summarised per column as (count, mean, M2, min, max), where
+    M2 is the sum of squared deviations from the chunk mean, then merged into the running
+    totals with Chan et al.'s parallel update (the batch form of Welford's algorithm),
+    vectorised across columns:
+
+        delta = mean_b - mean_a
+        mean  = mean_a + delta * n_b / n
+        M2    = M2_a + M2_b + delta**2 * n_a * n_b / n
 
     Attributes:
     ----------
     - n_features: int, or None before the first chunk
-    - count: np.ndarray (n_features,), non-NaN values seen per column
-    - mean, min, max: np.ndarray (n_features,), NaN for a column with no values yet
+    - count: np.ndarray of int (n_features,), non-NaN values seen per column
+    - mean, min, max: np.ndarray of float (n_features,), NaN for a column with no values yet
 
     Raises:
     ------
-    - RuntimeError: reading a result before any data has been seen
+    - RuntimeError: reading count/mean/min/max/variance/std before any data has been seen
+
+    Complexity:
+    ----------
+    - Time complexity: O(b * d) per chunk of b rows and d features
+    - Space complexity: O(d) state; O(b * d) temporarily per chunk
+
+    Note:
+    ----
+    - NaN values are skipped per column, so columns can have different counts.
+    - Infinite values raise ValueError (they would turn the running M2 into NaN).
+    - A column whose min equals its max reports a variance of exactly 0.0, so rounding in
+    the running mean cannot leave a tiny non-zero variance for constant data.
+    - Adapted from RunningStats (NumCompute, Assignment 2.1), which flattens all input
+    into a single stream.
     """
 
     def __init__(self):
-        raise NotImplementedError("StreamingStats is not implemented yet")
+        self.n_features = None
+        self._count = None
+        self._mean = None
+        self._m2 = None
+        self._min = None
+        self._max = None
+
+    def _init_state(self, n_features):
+        """Create zeroed per-column state for n_features columns."""
+        self.n_features = n_features
+        self._count = np.zeros(n_features, dtype=np.int64)
+        self._mean = np.zeros(n_features)
+        self._m2 = np.zeros(n_features)
+        self._min = np.full(n_features, np.inf)
+        self._max = np.full(n_features, -np.inf)
 
     def update_stats(self, X_chunk):
-        """Add one chunk of shape (n_samples, n_features); returns self."""
-        raise NotImplementedError("StreamingStats is not implemented yet")
+        """
+        Add one chunk of data.
+
+        Parameters:
+        ----------
+        - X_chunk: array-like of shape (n_samples, n_features), numeric; NaN is skipped
+
+        Returns:
+        -------
+        - self, so calls can be chained
+
+        Raises:
+        ------
+        - ValueError: if X_chunk is not numeric, not 2-D, empty, or contains infinity
+        - ValueError: if the number of features differs from earlier chunks
+
+        Complexity:
+        ----------
+        - Time complexity: O(b * d)
+        - Space complexity: O(b * d) for the masked temporaries
+        """
+        X = check_array(X_chunk, name="X", allow_nan=True)
+        n_features = check_n_features(X, self.n_features)
+        if self.n_features is None:
+            self._init_state(n_features)
+
+        present = ~np.isnan(X)
+        n_b = present.sum(axis=0)
+        values = np.where(present, X, 0.0)
+        mean_b = np.divide(values.sum(axis=0), n_b,
+                           out=np.zeros(n_features), where=n_b > 0)
+        m2_b = (np.where(present, X - mean_b, 0.0) ** 2).sum(axis=0)
+        min_b = np.where(present, X, np.inf).min(axis=0)
+        max_b = np.where(present, X, -np.inf).max(axis=0)
+
+        self._combine(n_b, mean_b, m2_b, min_b, max_b)
+        return self
 
     def merge(self, other):
-        """Combine another StreamingStats with the same n_features; returns self."""
-        raise NotImplementedError("StreamingStats is not implemented yet")
+        """
+        Combine another StreamingStats into this one.
+
+        Parameters:
+        ----------
+        - other: StreamingStats with the same n_features (or one that has seen no data)
+
+        Returns:
+        -------
+        - self
+
+        Raises:
+        ------
+        - ValueError: if other is not a StreamingStats, or n_features differ
+
+        Complexity:
+        ----------
+        - Time and space complexity: O(d)
+        """
+        if not isinstance(other, StreamingStats):
+            raise ValueError("Can only merge another StreamingStats.")
+        if other.n_features is None:
+            return self
+        if self.n_features is None:
+            self._init_state(other.n_features)
+        elif other.n_features != self.n_features:
+            raise ValueError(f"Cannot merge stats with {other.n_features} features into "
+                             f"stats with {self.n_features} features.")
+        self._combine(other._count, other._mean, other._m2, other._min, other._max)
+        return self
+
+    def _combine(self, n_b, mean_b, m2_b, min_b, max_b):
+        """Merge per-column (count, mean, M2, min, max) arrays into the running state."""
+        n_a = self._count
+        total = n_a + n_b
+        # n_b / total, with 0 where a column has still seen nothing (avoids 0/0).
+        frac_b = np.divide(n_b, total, out=np.zeros(self.n_features), where=total > 0)
+        delta = mean_b - self._mean
+        self._mean = self._mean + delta * frac_b
+        self._m2 = self._m2 + m2_b + delta ** 2 * n_a * frac_b
+        self._count = total
+        self._min = np.minimum(self._min, min_b)
+        self._max = np.maximum(self._max, max_b)
+
+    def _check_seen(self):
+        if self.n_features is None:
+            raise RuntimeError("StreamingStats has seen no data yet; call update_stats first.")
+
+    def _nan_if_empty(self, values):
+        return np.where(self._count > 0, values, np.nan)
+
+    @property
+    def count(self):
+        """np.ndarray of int (n_features,): non-NaN values seen per column."""
+        self._check_seen()
+        return self._count.copy()
+
+    @property
+    def mean(self):
+        """np.ndarray (n_features,): running mean, NaN for columns with no values."""
+        self._check_seen()
+        return self._nan_if_empty(self._mean)
+
+    @property
+    def min(self):
+        """np.ndarray (n_features,): smallest value seen, NaN for columns with no values."""
+        self._check_seen()
+        return self._nan_if_empty(self._min)
+
+    @property
+    def max(self):
+        """np.ndarray (n_features,): largest value seen, NaN for columns with no values."""
+        self._check_seen()
+        return self._nan_if_empty(self._max)
 
     def variance(self, ddof=0):
-        """Per-feature variance, divisor count - ddof; NaN where count - ddof <= 0."""
-        raise NotImplementedError("StreamingStats is not implemented yet")
+        """
+        Per-feature running variance.
+
+        Parameters:
+        ----------
+        - ddof: int >= 0, the divisor is (count - ddof); 0 (default) population,
+        1 sample variance
+
+        Returns:
+        -------
+        - np.ndarray (n_features,), NaN where count - ddof <= 0, exactly 0.0 where a
+        column's min equals its max
+
+        Raises:
+        ------
+        - ValueError: if ddof is not a non-negative integer
+        - RuntimeError: if no data has been seen
+
+        Complexity:
+        ----------
+        - Time and space complexity: O(d)
+        """
+        if isinstance(ddof, bool) or not isinstance(ddof, (int, np.integer)) or ddof < 0:
+            raise ValueError(f"ddof must be a non-negative integer. Got: {ddof!r}")
+        self._check_seen()
+        denom = self._count - ddof
+        valid = denom > 0
+        var = np.divide(self._m2, denom, out=np.full(self.n_features, np.nan), where=valid)
+        var[valid & (self._min == self._max)] = 0.0
+        return var
 
     def std(self, ddof=0):
-        """Per-feature standard deviation: sqrt(variance(ddof))."""
-        raise NotImplementedError("StreamingStats is not implemented yet")
+        """
+        Per-feature running standard deviation: sqrt(variance(ddof)).
+
+        Parameters:
+        ----------
+        - ddof: int >= 0 (see variance)
+
+        Returns:
+        -------
+        - np.ndarray (n_features,), NaN where count - ddof <= 0
+
+        Complexity:
+        ----------
+        - Time and space complexity: O(d)
+        """
+        return np.sqrt(self.variance(ddof))
