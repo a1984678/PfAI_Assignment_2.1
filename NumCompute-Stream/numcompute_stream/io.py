@@ -18,6 +18,9 @@ from os import path, PathLike
 
 import numpy as np
 
+from ._validation import check_positive_int
+from .utils import batches
+
 
 def _classify_cells(file_path: str | PathLike[str], delimiter: str | None,
                     skip_header: int):
@@ -173,11 +176,13 @@ def iter_chunks(X, y=None, *, chunk_size, shuffle=False, seed=0):
     """
     Split a dataset into chunks to simulate a data stream.
 
-    Stub: not implemented yet (tests in tests/test_io.py define the behaviour).
+    Thin wrapper over ``utils.batches``: validates the inputs with streaming-specific
+    error messages, then yields consecutive row slices.
 
     Parameters:
     ----------
-    - X: array-like of shape (n_samples, n_features)
+    - X: array-like of shape (n_samples, ...), any dtype; NaN (missing) values are passed
+    through unchanged
     - y: array-like of shape (n_samples,) or None (default None)
     - chunk_size: int >= 1, rows per chunk; the last chunk may be shorter
     - shuffle: bool, shuffle rows once before chunking (default False)
@@ -185,10 +190,40 @@ def iter_chunks(X, y=None, *, chunk_size, shuffle=False, seed=0):
 
     Yields:
     ------
-    - (X_chunk, y_chunk) if y is given, otherwise X_chunk
+    - (X_chunk, y_chunk) if y is given, otherwise X_chunk. X_chunk has shape
+    (chunk_size, ...) except possibly the last, which holds the remaining rows.
 
     Raises:
     ------
-    - NotImplementedError: always, until implemented
+    - ValueError: if chunk_size is not a positive integer
+    - ValueError: if X has no rows
+    - ValueError: if y is given and its length differs from the number of rows in X
+
+    Note:
+    ----
+    - This is a generator, so the errors above are raised on the first ``next()``,
+    not when iter_chunks is called.
+    - Chunks are copies (``batches`` indexes with an index array), so changing a chunk does
+    not change X.
+
+    Complexity:
+    ----------
+    - Time complexity: O(n_samples * d) in total over all chunks, d = values per row
+    - Space complexity: O(chunk_size * d) per chunk, plus O(n_samples) for the
+    shuffled index array when shuffle=True
     """
-    raise NotImplementedError("iter_chunks is not implemented yet")
+    chunk_size = check_positive_int(chunk_size, "chunk_size")
+    X = np.asarray(X)
+    if X.ndim == 0 or X.shape[0] == 0:
+        raise ValueError(f"X has no rows to stream. Got shape: {X.shape}")
+
+    if y is None:
+        for (X_chunk,) in batches(X, batch_size=chunk_size, shuffle=shuffle, seed=seed):
+            yield X_chunk
+        return
+
+    y = np.asarray(y)
+    if y.ndim == 0 or y.shape[0] != X.shape[0]:
+        raise ValueError(f"X and y must have the same number of samples. "
+                         f"Got {X.shape[0]} and {y.shape[0] if y.ndim else 'a scalar'}.")
+    yield from batches(X, y, batch_size=chunk_size, shuffle=shuffle, seed=seed)
