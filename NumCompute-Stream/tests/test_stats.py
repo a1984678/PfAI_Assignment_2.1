@@ -336,3 +336,24 @@ def test_histogram_range_count_and_feature_checks():
     h.update_stats(np.ones((2, 2)))
     with pytest.raises(ValueError, match="X has 1 features, but 2"):
         h.update_stats(np.ones((2, 1)))
+
+
+@pytest.mark.parametrize("scale", [1e-200, 1e200])
+def test_streaming_stats_any_magnitude(scale):
+    """Squares of 1e-200 underflow and of 1e200 overflow; mean and std must still be right."""
+    X = np.array([[1.0], [2.0], [3.0], [4.0]]) * scale
+    s = _stream(X, 1)
+    np.testing.assert_allclose(s.mean, [2.5 * scale])
+    np.testing.assert_allclose(s.std(), [np.sqrt(1.25) * scale])
+
+
+def test_streaming_stats_extreme_values_and_growing_magnitude():
+    """1e308 sums overflow naively; a stream whose magnitude jumps up must rescale state."""
+    s = _stream(np.array([[-1e308], [1e308], [1e308], [-1e308]]), 2)
+    np.testing.assert_allclose(s.mean, [0.0], atol=1e292)
+    np.testing.assert_allclose(s.std(), [1e308])
+
+    X = np.array([[1.0], [3.0], [1e200], [3e200]])
+    grown = _stream(X, 2)
+    np.testing.assert_allclose(grown.mean, [X.mean()])
+    np.testing.assert_allclose(grown.std(), [np.std(X / 1e200) * 1e200])

@@ -630,6 +630,15 @@ class RunningStats:
         return float(np.sqrt(self.variance(ddof)))
 
 
+def _power_of_two_below(x):
+    """Largest power of two <= x, elementwise (0 where x is 0). Exact, never overflows.
+
+    np.frexp writes x = m * 2**e with 0.5 <= m < 1, so 2**(e - 1) <= x < 2**e.
+    """
+    _, exponent = np.frexp(x)
+    return np.where(x > 0, np.ldexp(1.0, exponent - 1), 0.0)
+
+
 class StreamingStats:
     """
     Per-feature streaming count, mean, variance, std, min and max.
@@ -668,6 +677,9 @@ class StreamingStats:
     - Infinite values raise ValueError (they would turn the running M2 into NaN).
     - A column whose min equals its max reports a variance of exactly 0.0, so rounding in
     the running mean cannot leave a tiny non-zero variance for constant data.
+    - Any magnitude works (1e-300 to 1e308): mean and M2 are stored per column in units
+    of a power of two near the largest |value| seen, rescaled exactly when larger values
+    arrive, so sums cannot overflow and squares cannot underflow.
     - Adapted from RunningStats (NumCompute, Assignment 2.1), which flattens all input
     into a single stream.
     """
@@ -679,6 +691,7 @@ class StreamingStats:
         self._m2 = None
         self._min = None
         self._max = None
+        self._unit = None
 
     def _init_state(self, n_features):
         """Create zeroed per-column state for n_features columns."""
@@ -688,6 +701,28 @@ class StreamingStats:
         self._m2 = np.zeros(n_features)
         self._min = np.full(n_features, np.inf)
         self._max = np.full(n_features, -np.inf)
+        # Per-column power of two that mean and M2 are stored in (0 = only zeros seen).
+        self._unit = np.zeros(n_features)
+
+    def _effective_unit(self, unit):
+        """The unit to divide by: 1 where no non-zero value has been seen yet."""
+        return np.where(unit > 0, unit, 1.0)
+
+    def _rescale_factor(self, old_unit, new_unit):
+        """Power-of-two factor converting state stored in old_unit into new_unit (<= 1).
+
+        Where old_unit is 0 only zeros were seen, so the stored state is 0 and any factor
+        works; 1 is used so the factor (and its square) can never overflow.
+        """
+        return np.where(old_unit > 0, old_unit / self._effective_unit(new_unit), 1.0)
+
+    def _grow_unit(self, new_unit):
+        """Raise the per-column unit to at least new_unit, rescaling stored mean and M2."""
+        new_unit = np.maximum(self._unit, new_unit)
+        r = self._rescale_factor(self._unit, new_unit)
+        self._mean = self._mean * r
+        self._m2 = self._m2 * r * r
+        self._unit = new_unit
 
     def update_stats(self, X_chunk):
         """
@@ -718,10 +753,18 @@ class StreamingStats:
 
         present = ~np.isnan(X)
         n_b = present.sum(axis=0)
-        values = np.where(present, X, 0.0)
+
+        # Work in units of a power of two near each column's largest |value|, so sums of
+        # values near 1e308 cannot overflow and squares of values near 1e-200 cannot
+        # underflow. Dividing by a power of two only shifts the exponent: it is exact.
+        abs_max = np.where(present, np.abs(X), 0.0).max(axis=0)
+        self._grow_unit(_power_of_two_below(abs_max))
+        Xs = X / self._effective_unit(self._unit)
+
+        values = np.where(present, Xs, 0.0)
         mean_b = np.divide(values.sum(axis=0), n_b,
                            out=np.zeros(n_features), where=n_b > 0)
-        m2_b = (np.where(present, X - mean_b, 0.0) ** 2).sum(axis=0)
+        m2_b = (np.where(present, Xs - mean_b, 0.0) ** 2).sum(axis=0)
         min_b = np.where(present, X, np.inf).min(axis=0)
         max_b = np.where(present, X, -np.inf).max(axis=0)
 
@@ -757,11 +800,17 @@ class StreamingStats:
         elif other.n_features != self.n_features:
             raise ValueError(f"Cannot merge stats with {other.n_features} features into "
                              f"stats with {self.n_features} features.")
-        self._combine(other._count, other._mean, other._m2, other._min, other._max)
+        self._grow_unit(other._unit)
+        r = self._rescale_factor(other._unit, self._unit)
+        self._combine(other._count, other._mean * r, other._m2 * r * r,
+                      other._min, other._max)
         return self
 
     def _combine(self, n_b, mean_b, m2_b, min_b, max_b):
-        """Merge per-column (count, mean, M2, min, max) arrays into the running state."""
+        """Merge per-column (count, mean, M2, min, max) arrays into the running state.
+
+        mean_b and m2_b must already be in the current unit; min_b and max_b are raw values.
+        """
         n_a = self._count
         total = n_a + n_b
         # n_b / total, with 0 where a column has still seen nothing (avoids 0/0).
@@ -790,7 +839,7 @@ class StreamingStats:
     def mean(self):
         """np.ndarray (n_features,): running mean, NaN for columns with no values."""
         self._check_seen()
-        return self._nan_if_empty(self._mean)
+        return self._nan_if_empty(self._mean * self._effective_unit(self._unit))
 
     @property
     def min(self):
@@ -804,6 +853,17 @@ class StreamingStats:
         self._check_seen()
         return self._nan_if_empty(self._max)
 
+    def _scaled_variance(self, ddof):
+        """Variance in the stored unit: NaN where count - ddof <= 0, 0 where min == max."""
+        if isinstance(ddof, bool) or not isinstance(ddof, (int, np.integer)) or ddof < 0:
+            raise ValueError(f"ddof must be a non-negative integer. Got: {ddof!r}")
+        self._check_seen()
+        denom = self._count - ddof
+        valid = denom > 0
+        var = np.divide(self._m2, denom, out=np.full(self.n_features, np.nan), where=valid)
+        var[valid & (self._min == self._max)] = 0.0
+        return var
+
     def variance(self, ddof=0):
         """
         Per-feature running variance.
@@ -816,7 +876,8 @@ class StreamingStats:
         Returns:
         -------
         - np.ndarray (n_features,), NaN where count - ddof <= 0, exactly 0.0 where a
-        column's min equals its max
+        column's min equals its max. inf where the true variance exceeds the float64
+        range (spread above ~1e154); std stays finite there.
 
         Raises:
         ------
@@ -827,18 +888,16 @@ class StreamingStats:
         ----------
         - Time and space complexity: O(d)
         """
-        if isinstance(ddof, bool) or not isinstance(ddof, (int, np.integer)) or ddof < 0:
-            raise ValueError(f"ddof must be a non-negative integer. Got: {ddof!r}")
-        self._check_seen()
-        denom = self._count - ddof
-        valid = denom > 0
-        var = np.divide(self._m2, denom, out=np.full(self.n_features, np.nan), where=valid)
-        var[valid & (self._min == self._max)] = 0.0
-        return var
+        unit = self._effective_unit(self._unit)
+        with np.errstate(over="ignore"):  # a variance beyond float64 is reported as inf
+            return self._scaled_variance(ddof) * unit * unit
 
     def std(self, ddof=0):
         """
         Per-feature running standard deviation: sqrt(variance(ddof)).
+
+        Computed as sqrt(scaled variance) * unit, so it stays finite (and accurate) even
+        when the variance itself would overflow or underflow.
 
         Parameters:
         ----------
@@ -852,7 +911,7 @@ class StreamingStats:
         ----------
         - Time and space complexity: O(d)
         """
-        return np.sqrt(self.variance(ddof))
+        return np.sqrt(self._scaled_variance(ddof)) * self._effective_unit(self._unit)
 
 
 class StreamingQuantiles:
