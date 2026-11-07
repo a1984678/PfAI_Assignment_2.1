@@ -645,3 +645,27 @@ class SimpleImputer(Transformer):
             raise ValueError("Incompatible dimensionality.")
 
         return np.where(np.isnan(X), self.fill_value, X)
+
+
+class Imputer(Transformer):
+    """
+    Replace missing values (NaN) with per-feature estimates updated on the fly.
+
+    Stub: not implemented yet (tests in tests/test_preprocessing.py define the behaviour).
+
+    Parameters:
+    ----------
+    - strategy: "mean" (StreamingStats), "median" (StreamingQuantiles) or "constant"
+    - fill_value: number, used by "constant" and for features with no values seen yet
+    - k, seed: reservoir size and seed for the "median" strategy
+
+    Attributes:
+    ----------
+    - statistics_: array of shape (n_features,), the current fill value per feature
+    - n_features_in_: int
+    """
+
+    supports_partial_fit = True
+
+    def __init__(self, strategy="mean", fill_value=0, k=1000, seed=0):
+        raise NotImplementedError("Imputer is not implemented yet")

@@ -9,7 +9,7 @@ as zero-variance chunks and all-NaN columns.
 import numpy as np
 import pytest
 
-from numcompute_stream.preprocessing import MinMaxScaler, StandardScaler
+from numcompute_stream.preprocessing import Imputer, MinMaxScaler, StandardScaler
 
 
 def _partial_fit_in_chunks(scaler, X, chunk_size):
@@ -147,3 +147,57 @@ def test_minmax_fit_resets_partial_fit_continues_and_huge_range():
 
     with pytest.raises(ValueError, match="X has 2 features, but 1"):
         scaler.partial_fit(np.ones((2, 2)))
+
+
+# ---------------------------------------------------------------------
+# Imputer (streaming mean / median / constant)
+# ---------------------------------------------------------------------
+
+@pytest.mark.parametrize("strategy, reference", [("mean", np.nanmean),
+                                                  ("median", np.nanmedian)])
+def test_imputer_estimates_update_on_the_fly(strategy, reference):
+    """After every chunk the fill values equal the statistic of all data seen so far."""
+    chunk1 = np.array([[1.0, np.nan], [np.nan, 4.0], [3.0, 8.0]])
+    chunk2 = np.array([[11.0, 0.0], [np.nan, np.nan], [20.0, 2.0]])
+    imputer = Imputer(strategy=strategy)
+    assert Imputer.supports_partial_fit is True
+
+    assert imputer.partial_fit(chunk1) is imputer
+    np.testing.assert_allclose(imputer.statistics_, reference(chunk1, axis=0))
+
+    imputer.partial_fit(chunk2)
+    seen = np.vstack([chunk1, chunk2])
+    np.testing.assert_allclose(imputer.statistics_, reference(seen, axis=0))
+
+    out = imputer.transform(chunk2)
+    assert not np.isnan(out).any()
+    np.testing.assert_array_equal(out[1], imputer.statistics_)     # NaNs filled
+    np.testing.assert_array_equal(out[[0, 2]], chunk2[[0, 2]])     # values untouched
+
+
+def test_imputer_column_without_values_uses_fill_value_then_data():
+    imputer = Imputer(strategy="mean", fill_value=-1).partial_fit([[1.0, np.nan],
+                                                                  [3.0, np.nan]])
+    np.testing.assert_array_equal(imputer.transform([[np.nan, np.nan]]), [[2.0, -1.0]])
+
+    imputer.partial_fit([[np.nan, 10.0]])
+    np.testing.assert_array_equal(imputer.transform([[np.nan, np.nan]]), [[2.0, 10.0]])
+
+    constant = Imputer(strategy="constant", fill_value=7).partial_fit([[1.0], [3.0]])
+    np.testing.assert_array_equal(constant.transform([[np.nan]]), [[7.0]])
+    # fit = reset + partial_fit, and (like SimpleImputer) allows all-NaN columns
+    np.testing.assert_array_equal(imputer.fit([[np.nan, 5.0]]).statistics_, [-1.0, 5.0])
+
+
+def test_imputer_errors():
+    with pytest.raises(ValueError, match="strategy must be one of"):
+        Imputer(strategy="mode")
+    with pytest.raises(ValueError, match="fill_value must be a numeric type"):
+        Imputer(fill_value=np.nan)
+    with pytest.raises(RuntimeError, match="fit must be called before transform"):
+        Imputer().transform([[1.0]])
+    imputer = Imputer().partial_fit(np.ones((2, 2)))
+    with pytest.raises(ValueError, match="X has 3 features, but 2"):
+        imputer.partial_fit(np.ones((2, 3)))
+    with pytest.raises(ValueError, match="Incompatible dimensionality"):
+        imputer.transform(np.ones((2, 3)))
