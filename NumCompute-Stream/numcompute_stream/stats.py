@@ -845,3 +845,33 @@ class StreamingStats:
         - Time and space complexity: O(d)
         """
         return np.sqrt(self.variance(ddof))
+
+
+class StreamingQuantiles:
+    """
+    Approximate per-feature quantiles of a stream, using a uniform random sample of rows.
+
+    Stub: not implemented yet (tests in tests/test_stats.py define the behaviour).
+
+    Parameters:
+    ----------
+    - k: int >= 1, reservoir size in rows (default 1000); memory is O(k * n_features)
+    - seed: int, seed for the random generator (default 0)
+
+    Attributes:
+    ----------
+    - n_features: int, or None before the first chunk
+    - n_seen: int, rows seen so far
+    - sample: np.ndarray (min(n_seen, k), n_features), copy of the current reservoir
+    """
+
+    def __init__(self, k=1000, seed=0):
+        raise NotImplementedError("StreamingQuantiles is not implemented yet")
+
+    def update_stats(self, X_chunk):
+        """Add one chunk of shape (n_samples, n_features); returns self."""
+        raise NotImplementedError("StreamingQuantiles is not implemented yet")
+
+    def quantile(self, q):
+        """Per-feature quantiles: shape (n_features,) for scalar q, (len(q), n_features)."""
+        raise NotImplementedError("StreamingQuantiles is not implemented yet")

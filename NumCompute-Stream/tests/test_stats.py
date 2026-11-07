@@ -8,7 +8,7 @@ results agree with full-batch results.
 import numpy as np
 import pytest
 
-from numcompute_stream.stats import StreamingStats
+from numcompute_stream.stats import StreamingQuantiles, StreamingStats
 
 
 def _stream(X, chunk_size):
@@ -144,3 +144,104 @@ def test_feature_count_must_stay_the_same():
     s = StreamingStats().update_stats(np.ones((2, 3)))
     with pytest.raises(ValueError, match="X has 2 features, but 3"):
         s.update_stats(np.ones((2, 2)))
+
+
+# ---------------------------------------------------------------------
+# StreamingQuantiles (reservoir sampling)
+# ---------------------------------------------------------------------
+
+
+def _stream_q(X, chunk_size, k=1000, seed=0):
+    """Feed X to a fresh StreamingQuantiles in chunks of chunk_size rows."""
+    s = StreamingQuantiles(k=k, seed=seed)
+    for start in range(0, len(X), chunk_size):
+        s.update_stats(X[start:start + chunk_size])
+    return s
+
+
+@pytest.mark.parametrize("chunk_size", [1, 7, 100])
+def test_quantiles_exact_while_stream_fits_in_reservoir(chunk_size):
+    """With at most k rows seen, the reservoir holds every row: result == np.quantile."""
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(100, 3))
+    s = _stream_q(X, chunk_size, k=100)
+    q = [0.0, 0.1, 0.5, 0.9, 1.0]
+    np.testing.assert_allclose(s.quantile(q), np.quantile(X, q, axis=0))
+    assert s.n_seen == 100
+
+
+def test_quantiles_long_stream_is_close_and_memory_bounded():
+    """10x more rows than k: estimates within a small rank error, sample stays k rows."""
+    rng = np.random.default_rng(1)
+    X = rng.normal(size=(20_000, 2))
+    s = _stream_q(X, 64, k=1000)
+    assert s.sample.shape == (1000, 2)
+    assert s.n_seen == 20_000
+
+    q = np.array([0.05, 0.25, 0.5, 0.75, 0.95])
+    est = s.quantile(q)                                  # shape (5, 2)
+    for col in range(2):
+        rank = np.searchsorted(np.sort(X[:, col]), est[:, col]) / len(X)
+        assert np.max(np.abs(rank - q)) < 0.05
+
+
+def test_reservoir_keeps_early_and_late_rows_equally():
+    """Every stream position must have the same chance of being kept (no recency bias)."""
+    n, k = 20_000, 2000
+    X = np.arange(n, dtype=float).reshape(-1, 1)         # value == position in stream
+    s = _stream_q(X, 37, k=k)
+    per_decile = np.histogram(s.sample[:, 0], bins=10, range=(0, n))[0]
+    assert np.all(np.abs(per_decile - k / 10) < 60)      # expected 200 each
+
+
+def test_quantiles_seeded_reproducible():
+    X = np.random.default_rng(2).normal(size=(5000, 1))
+    a, b = _stream_q(X, 50, k=100, seed=3), _stream_q(X, 50, k=100, seed=3)
+    c = _stream_q(X, 50, k=100, seed=4)
+    np.testing.assert_array_equal(a.sample, b.sample)
+    assert not np.array_equal(a.sample, c.sample)
+
+
+def test_reservoir_samples_whole_rows():
+    """Columns are sampled together, so each kept row is a real row of the input."""
+    x = np.arange(3000, dtype=float)
+    X = np.column_stack([x, 2 * x])
+    s = _stream_q(X, 128, k=200)
+    np.testing.assert_array_equal(s.sample[:, 1], 2 * s.sample[:, 0])
+
+
+def test_quantiles_skip_nan_per_column():
+    X = np.array([[1.0, np.nan], [2.0, 10.0], [np.nan, 20.0], [4.0, 30.0], [5.0, np.nan]])
+    s = _stream_q(X, 2, k=10)
+    np.testing.assert_allclose(s.quantile([0.25, 0.5]), np.nanquantile(X, [0.25, 0.5], axis=0))
+
+
+def test_quantiles_all_nan_column_is_nan_without_warnings():
+    s = StreamingQuantiles(k=10).update_stats([[1.0, np.nan], [3.0, np.nan]])
+    out = s.quantile(0.5)
+    assert out[0] == 2.0 and np.isnan(out[1])
+
+
+def test_quantile_output_shapes_and_q_validation():
+    s = StreamingQuantiles(k=50).update_stats(np.ones((10, 4)))
+    assert s.update_stats(np.ones((1, 4))) is s
+    assert s.quantile(0.5).shape == (4,)
+    assert s.quantile([0.1, 0.9]).shape == (2, 4)
+    for bad in (-0.1, 1.5, [0.5, 2.0]):
+        with pytest.raises(ValueError, match="q must be in"):
+            s.quantile(bad)
+
+
+def test_quantiles_before_data_and_bad_input():
+    s = StreamingQuantiles()
+    assert s.n_features is None and s.n_seen == 0
+    with pytest.raises(RuntimeError, match="no data"):
+        s.quantile(0.5)
+    for bad_k in (0, -5, 2.5, True):
+        with pytest.raises(ValueError, match="k must be a positive integer"):
+            StreamingQuantiles(k=bad_k)
+    with pytest.raises(ValueError, match="2-dimensional"):
+        s.update_stats([1.0, 2.0])
+    s.update_stats(np.ones((3, 2)))
+    with pytest.raises(ValueError, match="X has 3 features, but 2"):
+        s.update_stats(np.ones((3, 3)))
