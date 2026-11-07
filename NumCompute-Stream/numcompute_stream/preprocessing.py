@@ -23,46 +23,63 @@ API:
 Fully vectorized using NumPy; avoid Python loops.
 """
 
-from .pipeline import Transformer
 import numpy as np
+
+from ._validation import check_array, check_n_features
+from .pipeline import Transformer
+from .stats import StreamingStats
 
 
 class StandardScaler(Transformer):
     """
     Standardize features by removing the mean and scaling to unit variance.
 
+    Supports streaming: ``partial_fit`` updates running per-feature mean and variance
+    (vectorised Chan/Welford merge in ``stats.StreamingStats``) one chunk at a time,
+    without storing the data. ``fit`` is a reset followed by one ``partial_fit``.
+
     Attributes:
     ----------
-    - mean_: array of shape (n_features,), the mean value for each feature in the training set.
-    - scale_: array of shape (n_features,), the standard deviation for each feature in
-    training set or 1 for constant columns.
+    - mean_: array of shape (n_features,), the mean of each feature over all data seen
+    (NaN for a feature with no non-NaN values yet, streaming only).
+    - scale_: array of shape (n_features,), the population standard deviation (ddof=0) of
+    each feature, or 1 for a constant feature or one with no values yet.
+    - n_features_in_: int, number of features seen during fit / partial_fit.
 
     Complexity:
     ----------
     - Time complexity:
-        - fit: O(n*m) where n is the number of samples and m is the number of features.
-        - transform: O(n*m) where n is the number of samples and m is the number of features.
-    - Space complexity: O(n*m) for storing the transformed data in memory.
+        - fit / partial_fit: O(n*m) for n samples (in the chunk) and m features.
+        - transform: O(n*m).
+    - Space complexity: O(m) state; O(n*m) for the transformed output.
 
     Note:
     ----
-    - NaN values are ignored in the computation of mean and standard deviation.
-    - in a constant column (where all values are the same), the standard deviation is set to 1
-    to avoid division by zero, so these training values map to 0 after transformation.
-    - Uses population standard deviation (ddof=0) for scaling.
-    - NaN values in the input data will remain NaN in the output data after transformation.
+    - NaN values are ignored in the computation of mean and standard deviation, and stay
+    NaN after transformation.
+    - A constant feature (min == max so far) gets scale 1, so its values map to 0 and not
+    0 / 0. Once later chunks add spread, the scale becomes the true standard deviation.
+    - fit raises on a column that is entirely NaN; partial_fit allows it (an early chunk of
+    a sparse stream may have no values yet) and the column transforms to NaN until a later
+    chunk provides data.
+    - Infinite values are rejected (they would corrupt the running variance).
+    - Adapted from NumCompute (Assignment 2.1). The 2.1 fit also rescaled values near the
+    float64 limit (~1e308) to avoid overflow; the streaming version does not.
     """
+
+    supports_partial_fit = True
 
     def __init__(self):
         pass
 
     def fit(self, X, y=None):
         """
-        Fit the scaler on the data by computing the mean and standard deviation for each feature.
+        Fit the scaler from scratch, discarding anything learned earlier.
 
         Parameters:
         ----------
         - X: array-like of shape (n_samples, n_features)
+        - y: ignored, accepted for Pipeline compatibility
 
         Returns:
         -------
@@ -72,8 +89,8 @@ class StandardScaler(Transformer):
         ------
         - ValueError: if the input data is empty or not 2-dimensional
         - ValueError: if any column has all NaN values
+        - ValueError: if X contains infinity
         """
-
         X = np.asarray(X, dtype=np.float64)
 
         if X.ndim != 2:
@@ -82,35 +99,54 @@ class StandardScaler(Transformer):
         if X.size == 0:
             raise ValueError("Cannot fit StandardScaler on an empty array.")
 
-        # Check if entire columns are NaN and raise an error if so
         if np.any(np.all(np.isnan(X), axis=0)):
             raise ValueError("Cannot fit StandardScaler on a column with all NaN values.")
 
-        # nanmean and nanstd ignore NaN values. Summing very large values overflows (1e308 +
-        # 1e308 is inf), so where the plain mean is not finite, the mean is taken of the column
-        # divided by its largest absolute value, and that peak is multiplied back in.
-        with np.errstate(over="ignore"):
-            self.mean_ = np.nanmean(X, axis=0)
-        overflowed = ~np.isfinite(self.mean_)
-        if np.any(overflowed):
-            col_peak = np.nanmax(np.abs(X[:, overflowed]), axis=0)
-            self.mean_[overflowed] = col_peak * np.nanmean(X[:, overflowed] / col_peak, axis=0)
+        self._reset()
+        return self.partial_fit(X)
 
-        # Squaring very large or very small deviations overflows or underflows (1e200 ** 2 is
-        # inf, 1e-200 ** 2 is 0). So divide the deviations by their largest absolute value first,
-        # take the std of those numbers (all between -1 and 1), then multiply the peak back in.
-        deviations = X - self.mean_
-        peak = np.nanmax(np.abs(deviations), axis=0)
+    def _reset(self):
+        """Forget all streaming state so the next partial_fit starts from scratch."""
+        self._stats = None
+        for attr in ("mean_", "scale_", "n_features_in_"):
+            if hasattr(self, attr):
+                delattr(self, attr)
 
-        # A constant column has no spread: use a scale of 1 so it maps to 0 and not 0 / 0.
-        # The check compares max and min, because the mean of equal floats can differ in the
-        # last digit, and comparing them (not subtracting) cannot overflow.
-        is_constant = np.nanmax(X, axis=0) == np.nanmin(X, axis=0)
-        safe_peak = np.where(is_constant | (peak == 0), 1.0, peak)
+    def partial_fit(self, X, y=None):
+        """
+        Update the running mean and standard deviation with one chunk of data.
 
-        self.scale_ = safe_peak * np.nanstd(deviations / safe_peak, axis=0)
-        self.scale_[is_constant] = 1.0
+        Parameters:
+        ----------
+        - X: array-like of shape (n_samples, n_features), one chunk; NaN allowed
+        - y: ignored, accepted for Pipeline compatibility
 
+        Returns:
+        -------
+        - self: object
+
+        Raises:
+        ------
+        - ValueError: if X is not numeric, not 2-D, empty, or contains infinity
+        - ValueError: if the number of features differs from earlier chunks
+
+        Complexity:
+        ----------
+        - Time complexity: O(n*m) for a chunk of n samples and m features
+        - Space complexity: O(m) state
+        """
+        X = check_array(X, name="X", allow_nan=True)
+        n_features = check_n_features(X, getattr(self, "n_features_in_", None))
+        if getattr(self, "_stats", None) is None:
+            self._stats = StreamingStats()
+        self._stats.update_stats(X)
+
+        self.n_features_in_ = n_features
+        self.mean_ = self._stats.mean
+        std = self._stats.std()
+        # std is NaN for a column with no values yet and exactly 0 for a constant one;
+        # both get scale 1 (the NaN comparison is False, so no warning is raised).
+        self.scale_ = np.where(std > 0, std, 1.0)
         return self
 
     def transform(self, X):
