@@ -9,7 +9,7 @@ as zero-variance chunks and all-NaN columns.
 import numpy as np
 import pytest
 
-from numcompute_stream.preprocessing import Imputer, MinMaxScaler, StandardScaler
+from numcompute_stream.preprocessing import Imputer, MinMaxScaler, OneHotEncoder, StandardScaler
 
 
 def _partial_fit_in_chunks(scaler, X, chunk_size):
@@ -201,3 +201,56 @@ def test_imputer_errors():
         imputer.partial_fit(np.ones((2, 3)))
     with pytest.raises(ValueError, match="Incompatible dimensionality"):
         imputer.transform(np.ones((2, 3)))
+
+
+# ---------------------------------------------------------------------
+# OneHotEncoder.partial_fit (categories expand; existing columns never move)
+# ---------------------------------------------------------------------
+
+def test_onehot_partial_fit_expands_categories_with_stable_columns():
+    chunk1 = np.array([["cat", 1.0], ["dog", 2.0]], dtype=object)
+    chunk2 = np.array([["bird", 2.0], ["cat", 3.0]], dtype=object)
+    enc = OneHotEncoder()
+    assert OneHotEncoder.supports_partial_fit is True
+    assert enc.partial_fit(chunk1) is enc
+    first = enc.transform(chunk1)
+    np.testing.assert_array_equal(first, [[1, 0, 1, 0], [0, 1, 0, 1]])  # 2.1 layout
+
+    enc.partial_fit(chunk2)
+    assert list(enc.categories_[0]) == ["cat", "dog", "bird"]   # new ones appended
+    assert list(enc.categories_[1]) == [1.0, 2.0, 3.0]
+    assert enc.columns_[4:] == [(0, "bird"), (1, 3.0)]          # new columns at the end
+    assert enc.n_features_in_ == 2
+
+    again = enc.transform(chunk1)
+    assert again.shape == (2, 6)
+    np.testing.assert_array_equal(again[:, :4], first)          # old columns unchanged
+    np.testing.assert_array_equal(again[:, 4:], 0)
+    np.testing.assert_array_equal(enc.transform(chunk2), [[0, 0, 0, 1, 1, 0],
+                                                          [1, 0, 0, 0, 0, 1]])
+
+    # fit = reset + partial_fit, so one fit on everything gives the sorted 2.1 order
+    refit = OneHotEncoder().fit(np.vstack([chunk1, chunk2]))
+    assert list(refit.categories_[0]) == ["bird", "cat", "dog"]
+
+
+def test_onehot_streaming_unknowns_nan_and_errors():
+    enc = OneHotEncoder().partial_fit(np.array([[0], [1]]))
+    with pytest.raises(ValueError, match="Found unknown categories during transform"):
+        enc.transform(np.array([[2]]))
+
+    # "ignore": an unseen category gives an all-zero block instead of stopping the stream
+    lenient = OneHotEncoder(handle_unknown="ignore").partial_fit(np.array([[0], [1]]))
+    np.testing.assert_array_equal(lenient.transform(np.array([[2], [1]])), [[0, 0], [0, 1]])
+
+    # NaN first seen in a later chunk becomes a new category like any other
+    enc.partial_fit(np.array([[np.nan], [0]]))
+    np.testing.assert_array_equal(enc.transform(np.array([[np.nan]])), [[0, 0, 1]])
+
+    words = OneHotEncoder().partial_fit(np.array([["cat"], ["dog"]]))
+    with pytest.raises(TypeError, match="Mixed types in columns"):
+        words.partial_fit(np.array([[1], [2]]))          # numbers after strings
+    with pytest.raises(ValueError, match="X has 2 features, but 1"):
+        words.partial_fit(np.array([["a", "b"]]))
+    with pytest.raises(ValueError, match="handle_unknown must be"):
+        OneHotEncoder(handle_unknown="skip")

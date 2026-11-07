@@ -410,8 +410,10 @@ class OneHotEncoder(Transformer):
     and the value will be 1 if the sample belongs to that category and 0 otherwise.
     """
 
-    def __init__(self):
-        pass
+    def __init__(self, handle_unknown="error"):
+        # Stub for the streaming version: partial_fit, columns_ and handle_unknown="ignore"
+        # are not implemented yet (tests in tests/test_preprocessing.py define them).
+        self.handle_unknown = handle_unknown
 
     @staticmethod
     def _as_array(X):
