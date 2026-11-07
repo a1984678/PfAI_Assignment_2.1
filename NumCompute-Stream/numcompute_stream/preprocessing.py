@@ -1,26 +1,25 @@
 """Streaming preprocessing transformers.
 
-- Scalers (e.g., ``StandardScaler``) must support ``.partial_fit()``:
+Every class here follows the ``pipeline.Transformer`` API:
 
-  - Maintain running mean/var (e.g., Welford or EMA)
+- ``fit(X) -> self``: learn from scratch (discards earlier state)
+- ``partial_fit(X_chunk) -> self``: update the learned state with one chunk
+- ``transform(X) -> X_out`` and ``fit_transform(X) -> X_out``
 
-- ``Imputer`` updates missing-value estimates on the fly (mean, median or constant)
-- ``OneHotEncoder`` expands categories incrementally
+Streaming classes (``supports_partial_fit = True``):
 
-Baseline (adapted from NumCompute, Assignment 2.1)
---------------------------------------------------
-Implement:
-- StandardScaler   (z-score standardization)
-- MinMaxScaler     (scale to a given range)
-- OneHotEncoder    (for categorical variables)
-- (Optional) Simple imputer to replace NaN with a constant
+- ``StandardScaler``: running mean / variance (vectorised Chan/Welford merge in
+  ``stats.StreamingStats``)
+- ``MinMaxScaler``: running per-feature min / max
+- ``Imputer``: fill values updated on the fly (mean, median or constant)
+- ``OneHotEncoder``: categories added incrementally; new categories get new output columns
+  at the end, so existing columns never move
 
-API:
-- fit(X) -> self
-- transform(X) -> X_out
-- fit_transform(X) -> X_out
-
-Fully vectorized using NumPy; avoid Python loops.
+For the streaming classes ``fit`` is a reset followed by one ``partial_fit``, so batch and
+streaming results share one code path. ``SimpleImputer`` (constant fill) is kept from
+Assignment 2.1. All classes are adapted from NumCompute (Assignment 2.1) and vectorised
+with NumPy; the only Python loops are over features in ``OneHotEncoder``, whose number of
+categories differs per feature.
 """
 
 import numpy as np
@@ -63,8 +62,10 @@ class StandardScaler(Transformer):
     a sparse stream may have no values yet) and the column transforms to NaN until a later
     chunk provides data.
     - Infinite values are rejected (they would corrupt the running variance).
-    - Adapted from NumCompute (Assignment 2.1). The 2.1 fit also rescaled values near the
-    float64 limit (~1e308) to avoid overflow; the streaming version does not.
+    - Values up to the float64 limit (~1e308) are handled without overflow, also when they
+    arrive in different chunks: StreamingStats stores each feature in units of a power of
+    two, which replaces the rescaling in the 2.1 fit.
+    - Adapted from NumCompute (Assignment 2.1).
     """
 
     supports_partial_fit = True
