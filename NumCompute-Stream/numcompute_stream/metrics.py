@@ -563,3 +563,157 @@ def auc(x, y):
         raise ValueError("x must be monotonic (increasing or decreasing).")
 
     return float(direction * np.sum(dx * (y[1:] + y[:-1]) / 2.0))
+
+
+# ---------------------------------------------------------------------
+# Streaming metrics: update(y_true_chunk, y_pred_chunk) / reset() / result()
+# ---------------------------------------------------------------------
+
+class StreamingConfusionMatrix:
+    """
+    Confusion matrix accumulated over chunks, optionally over a rolling window.
+
+    Parameters:
+    ----------
+    - labels: array-like of shape (n_classes,), optional. Fixed row/column order; a label
+    outside it raises. If None, classes are added as they first appear and the result is
+    in sorted label order.
+    - window: int >= 1 or None. If given, only the last ``window`` chunks (update calls)
+    are counted; None counts everything since the last reset.
+
+    Attributes:
+    ----------
+    - labels_: np.ndarray of shape (n_classes,), the row/column labels of result()
+
+    Raises:
+    ------
+    - ValueError: if labels is empty, not 1-D or has duplicates, or window is not a
+    positive integer
+    """
+
+    def __init__(self, labels=None, window=None):
+        raise NotImplementedError
+
+    def update(self, y_true, y_pred):
+        """
+        Add one chunk of true and predicted labels.
+
+        Parameters:
+        ----------
+        - y_true: array-like of shape (n_samples,), true labels (numbers or strings)
+        - y_pred: array-like of shape (n_samples,), predicted labels
+
+        Returns:
+        -------
+        - self
+
+        Raises:
+        ------
+        - ValueError: if the chunk fails validation (see _check_targets), or contains a
+        label outside a fixed ``labels``
+        - TypeError: if labels mix strings and numbers
+
+        Complexity:
+        ----------
+        - Time complexity: O(n log k + k^2) for n samples and k classes
+        - Space complexity: O(k^2) per chunk kept in the window
+        """
+        raise NotImplementedError
+
+    def reset(self):
+        """Forget all counts (fixed labels are kept). Returns self."""
+        raise NotImplementedError
+
+    def result(self):
+        """
+        Return the accumulated confusion matrix.
+
+        Returns:
+        -------
+        - np.ndarray of int64, shape (n_classes, n_classes): rows are true labels, columns
+        predicted labels, both in ``labels_`` order. Shape (0, 0) before any data when no
+        labels were given.
+        """
+        raise NotImplementedError
+
+
+class _StreamingClassificationMetric:
+    """
+    Shared base for streaming Accuracy / Precision / Recall / F1.
+
+    Each metric keeps a StreamingConfusionMatrix (with the same window) and computes its
+    score from the counts with the 2.1 formulas, so a streamed result equals the 2.1 batch
+    function on all the data seen (or on the chunks in the window).
+
+    result() is NaN while no samples have been seen.
+    """
+
+    def __init__(self, window=None):
+        raise NotImplementedError
+
+    def update(self, y_true, y_pred):
+        """
+        Add one chunk; see StreamingConfusionMatrix.update. Returns self.
+        """
+        raise NotImplementedError
+
+    def reset(self):
+        """Forget all data seen so far. Returns self."""
+        raise NotImplementedError
+
+    def result(self):
+        """
+        Return the score over all data seen (or the window).
+
+        Returns:
+        -------
+        - float in [0, 1], or NaN if no samples have been seen yet
+        """
+        raise NotImplementedError
+
+
+class Accuracy(_StreamingClassificationMetric):
+    """
+    Streaming accuracy: correct predictions / samples seen.
+
+    Parameters:
+    ----------
+    - window: int >= 1 or None, number of most recent chunks to score (None = all)
+    """
+
+
+class _PerClassMetric(_StreamingClassificationMetric):
+    """
+    Shared base for Precision / Recall / F1 (pos_label and average as in 2.1).
+
+    Parameters:
+    ----------
+    - pos_label: the positive class when average='binary' (default 1)
+    - average: 'binary' (score of pos_label) or 'macro' (mean over the classes seen)
+    - window: int >= 1 or None
+
+    Raises:
+    ------
+    - ValueError: if average is not 'binary' or 'macro' (at construction), or, from
+    result(), if average='binary' and more than 2 classes have been seen
+
+    Note:
+    ----
+    - A class not seen yet does not take part in the macro average; a 0/0 score is 0.0,
+    as in the 2.1 functions.
+    """
+
+    def __init__(self, pos_label=1, average="binary", window=None):
+        raise NotImplementedError
+
+
+class Precision(_PerClassMetric):
+    """Streaming precision TP / (TP + FP); parameters as _PerClassMetric."""
+
+
+class Recall(_PerClassMetric):
+    """Streaming recall TP / (TP + FN); parameters as _PerClassMetric."""
+
+
+class F1(_PerClassMetric):
+    """Streaming F1 = 2PR / (P + R); parameters as _PerClassMetric."""
