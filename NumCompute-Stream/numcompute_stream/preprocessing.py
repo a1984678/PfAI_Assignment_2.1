@@ -379,9 +379,25 @@ class OneHotEncoder(Transformer):
     """
     Encode categorical features as a one-hot numeric array.
 
+    Supports streaming: ``partial_fit`` adds categories as they first appear. Output columns
+    never move: the first chunk gives the 2.1 layout (one block per feature, categories
+    sorted, NaN last) and every category discovered later gets a new column at the end of
+    the output, so a column index always means the same (feature, category). The output
+    width therefore grows; rows encoded earlier only need zeros appended on the right.
+
+    Parameters:
+    ----------
+    - handle_unknown: "error" (default, as in 2.1) raises on a category not seen yet;
+    "ignore" encodes it as all zeros in that feature's columns. "ignore" suits streams,
+    where a chunk is usually scored before the encoder has been updated with it.
+
     Attributes:
     ----------
-    - categories_: list of arrays, each array contains the unique categories for a feature.
+    - categories_: list of arrays, one per feature, holding its categories in the order they
+    were discovered (sorted within the first chunk, and within each later batch of new ones).
+    - columns_: list of (feature_index, category) tuples, one per output column, in output
+    order.
+    - n_features_in_: int, number of input features.
 
     Complexity:
     ----------
@@ -404,15 +420,25 @@ class OneHotEncoder(Transformer):
     - NaN values are treated as a separate category.
     - If a feature has the same value for all samples, it will be transformed to a single
     column of ones.
-    - The order of the categories in the output will be the same as the order of the unique
-    categories found during fit; this is ascending with NaN values placed at the end.
+    - After fit (or the first partial_fit) the categories of each feature are ascending with
+    NaN placed at the end. Categories found by later partial_fit calls follow, at the end of
+    the output.
+    - A column must not switch between numbers and strings across chunks (TypeError).
     - The output will be a binary array where each column corresponds to a unique category,
     and the value will be 1 if the sample belongs to that category and 0 otherwise.
     """
 
+    supports_partial_fit = True
+
     def __init__(self, handle_unknown="error"):
-        # Stub for the streaming version: partial_fit, columns_ and handle_unknown="ignore"
-        # are not implemented yet (tests in tests/test_preprocessing.py define them).
+        """
+        Raises:
+        ------
+        - ValueError: if handle_unknown is not "error" or "ignore"
+        """
+        if handle_unknown not in ("error", "ignore"):
+            raise ValueError("handle_unknown must be 'error' or 'ignore'. "
+                             f"Got: {handle_unknown!r}")
         self.handle_unknown = handle_unknown
 
     @staticmethod
@@ -469,11 +495,12 @@ class OneHotEncoder(Transformer):
 
     def fit(self, X, y=None):
         """
-        Fit the encoder on the data by finding the unique categories for each feature.
+        Fit the encoder from scratch by finding the unique categories for each feature.
 
         Parameters:
         ----------
         - X: array-like of shape (n_samples, n_features)
+        - y: ignored, accepted for Pipeline compatibility
 
         Returns:
         -------
@@ -492,9 +519,88 @@ class OneHotEncoder(Transformer):
         if X.size == 0:
             raise ValueError("Cannot fit OneHotEncoder on an empty array.")
 
-        # The number of categories differs between columns, so each column is handled by its own
-        # call to _unique, which uses whole-array NumPy calls.
-        self.categories_ = [self._unique(X[:, i]) for i in range(X.shape[1])]
+        self._reset()
+        return self.partial_fit(X)
+
+    def _reset(self):
+        """Forget all categories so the next partial_fit starts from scratch."""
+        for attr in ("categories_", "columns_", "_positions", "n_features_in_"):
+            if hasattr(self, attr):
+                delattr(self, attr)
+
+    @staticmethod
+    def _matches(values, categories):
+        """
+        Boolean matrix of shape (len(values), len(categories)): values[i] equals categories[j].
+
+        x != x is True only for NaN, so NaN matches NaN; unlike np.isnan this also works on
+        strings and object arrays.
+        """
+        values = values.reshape(-1, 1)
+        both_nan = (values != values) & (categories != categories)
+        return (values == categories) | both_nan
+
+    def partial_fit(self, X, y=None):
+        """
+        Add the categories first seen in this chunk.
+
+        Parameters:
+        ----------
+        - X: array-like of shape (n_samples, n_features), numbers or strings per column
+        - y: ignored, accepted for Pipeline compatibility
+
+        Returns:
+        -------
+        - self: object
+
+        Raises:
+        ------
+        - ValueError: if X is not 2-D or empty, or its feature count differs from earlier
+        chunks
+        - TypeError: if a column mixes strings and numbers, within the chunk or compared with
+        the categories already seen
+
+        Complexity:
+        ----------
+        - Time complexity: O(m * (n log n + u * k)) for n samples, m features, u unique values
+        in the chunk and k known categories per feature
+        - Space complexity: O(total categories)
+        """
+        X = self._as_array(X)
+        if X.ndim != 2:
+            raise ValueError(f"X must be 2-dimensional (n_samples, n_features). "
+                             f"Got shape: {X.shape}")
+        if X.shape[0] == 0 or X.shape[1] == 0:
+            raise ValueError(f"X must have at least one row and one column. "
+                             f"Got shape: {X.shape}")
+        n_features = check_n_features(X, getattr(self, "n_features_in_", None))
+
+        if not hasattr(self, "categories_"):
+            # First chunk: the 2.1 layout, one block of sorted categories per feature. The
+            # number of categories differs between columns, so each column is handled by
+            # its own call to _unique, which uses whole-array NumPy calls.
+            self.categories_ = [self._unique(X[:, i]) for i in range(n_features)]
+            self.columns_, self._positions = [], []
+            for i, categories in enumerate(self.categories_):
+                start = len(self.columns_)
+                self.columns_.extend((i, c) for c in categories.tolist())
+                self._positions.append(np.arange(start, len(self.columns_)))
+            self.n_features_in_ = n_features
+            return self
+
+        for i, known in enumerate(self.categories_):
+            seen = self._unique(X[:, i])
+            # Sorting old and new categories together raises TypeError if one is a string
+            # and the other a number, so a column cannot switch type between chunks.
+            self._unique(np.concatenate([known.astype(object), seen.astype(object)]))
+            new = seen[~self._matches(seen, known).any(axis=1)]
+            if new.size == 0:
+                continue
+            start = len(self.columns_)
+            self.categories_[i] = np.concatenate([known, new])
+            self.columns_.extend((i, c) for c in new.tolist())
+            self._positions[i] = np.concatenate(
+                [self._positions[i], np.arange(start, len(self.columns_))])
         return self
 
     def transform(self, X):
@@ -507,14 +613,17 @@ class OneHotEncoder(Transformer):
 
         Returns:
         -------
-        - X_out: array of shape (n_samples, n_encoded_features) with one-hot encoding applied
+        - X_out: float array of shape (n_samples, len(columns_)) with one-hot encoding
+        applied; column j is 1 where the row's feature columns_[j][0] equals category
+        columns_[j][1]
 
         Raises:
         ------
         - RuntimeError: if fit has not been called before transform
         - ValueError: if the input data is not 2-dimensional or has a different number
         of features than the fitted data
-        - ValueError: if any category in the input data was not seen during fit
+        - ValueError: if any category in the input data was not seen during fit (only when
+        handle_unknown="error")
         """
         if not hasattr(self, 'categories_'):
             raise RuntimeError("fit must be called before transform.")
@@ -527,19 +636,18 @@ class OneHotEncoder(Transformer):
         if X.shape[1] != len(self.categories_):
             raise ValueError("Incompatible dimensionality.")
 
-        encoded_columns = []
+        out = np.zeros((X.shape[0], len(self.columns_)))
         for i, categories in enumerate(self.categories_):
-            col = X[:, i:i+1]
-            # x != x is True only for NaN, unlike np.isnan this also works on strings
-            encoded = (col == categories) | ((col != col) & (categories != categories))
+            encoded = self._matches(X[:, i], categories)
 
             # check for unseen categories in the input data
-            if not np.all(np.any(encoded, axis=1)):
+            if self.handle_unknown == "error" and not np.all(np.any(encoded, axis=1)):
                 raise ValueError("Found unknown categories during transform")
 
-            encoded_columns.append(encoded)
+            # this feature's categories may be spread over the output (later ones at the end)
+            out[:, self._positions[i]] = encoded
 
-        return np.hstack(encoded_columns).astype(np.float64)
+        return out
 
 
 def _check_fill_value(fill_value):
