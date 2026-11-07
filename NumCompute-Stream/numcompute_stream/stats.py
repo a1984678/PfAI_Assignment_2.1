@@ -1,21 +1,28 @@
 """Streaming statistics.
 
-- All statistical functions redesigned for streaming
-- Implement chunk-based versions of:
+Streaming API (NumCompute-Stream)
+---------------------------------
+Every class takes 2-D chunks of shape (n_samples, n_features) through
+``update_stats(X_chunk)`` and reports one result per feature (axis 0 is reduced).
+NaN is skipped per column; infinity raises ValueError; reading a result before any
+data raises RuntimeError.
 
-  - Mean, variance, quantiles
-  - Histograms (optionally with sliding window)
-
-- Add ``update_stats(X_chunk)`` API
+- ``StreamingStats``: count, mean, variance, std, min, max (+ ``merge``), using a
+  vectorised Chan/Welford merge, so memory is O(n_features)
+- ``StreamingQuantiles``: approximate quantiles from a reservoir sample of k rows
+  (exact while at most k rows have been seen)
+- ``StreamingHistogram``: fixed-bin histograms per feature, optionally over a sliding
+  window of the most recent chunks
 
 Baseline (adapted from NumCompute, Assignment 2.1)
 --------------------------------------------------
-- Basic descriptive statistics:
-  - Mean, median, standard deviation, min, max
+Batch functions that need all the data at once, kept for non-streaming use:
+- Basic descriptive statistics: mean, median, std, min, max
 - Histogram
 - Quantiles (with NaN handling)
 - Axis-wise stats with clear dimension/shape behaviour
-- Streaming statistics (Welford's algorithm) with RunningStats
+- ``RunningStats``: Welford over a single flattened stream (StreamingStats is the
+  per-feature version)
 """
 
 import warnings

@@ -1,12 +1,23 @@
 """Custom I/O pipeline.
 
 - Load a dataset from a CSV file (used by ``demo/stream_demo.ipynb``)
-- Support splitting the dataset into multiple chunks to simulate a
-  streaming data setting
+- Split the dataset into chunks to simulate a streaming data setting
+
+Streaming API (NumCompute-Stream)
+---------------------------------
+- ``iter_chunks(X, y=None, *, chunk_size, shuffle=False, seed=0)``: lazy generator of
+  (X_chunk, y_chunk) pairs (or X_chunk alone); the last chunk may be shorter
+
+Example
+-------
+>>> data = load_csv("data.csv", skip_header=1)
+>>> X, y = data[:, :-1], data[:, -1]
+>>> for X_chunk, y_chunk in iter_chunks(X, y, chunk_size=100):
+...     model.partial_fit(X_chunk, y_chunk)
 
 Baseline (adapted from NumCompute, Assignment 2.1)
 --------------------------------------------------
-- Load CSV files using numpy.genfromtxt
+- Load CSV files using numpy.genfromtxt (``load_csv``)
 - Support custom delimiters (e.g. comma, tab)
 - Handle missing values (skip or fill with a placeholder value)
 - Support numeric (dtype=float) and text/mixed (dtype=object) data
