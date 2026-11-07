@@ -19,6 +19,7 @@ Baseline (adapted from NumCompute, Assignment 2.1)
 """
 
 import warnings
+from collections import deque
 
 import numpy as np
 
@@ -997,25 +998,162 @@ class StreamingHistogram:
     """
     Per-feature histogram over a stream, with an optional sliding window of recent chunks.
 
-    Stub: not implemented yet (tests in tests/test_stats.py define the behaviour).
-
     Parameters:
     ----------
     - bins: int >= 1, equal-width bins per feature
     - value_range: (low, high) shared by every feature, or a sequence of one (low, high)
-    pair per feature; required (a range inferred from the data breaks on outliers)
-    - window: int >= 1 or None, number of most recent chunks counted (None = all)
+    pair per feature; required, because a range inferred from the data breaks on outliers.
+    A pair with low == high is widened to (low - 0.5, high + 0.5), as in ``histogram``.
+    - window: int >= 1 or None, number of most recent chunks counted (default None, all)
 
     Attributes:
     ----------
-    - counts: np.ndarray of int (n_features, bins)
-    - edges: np.ndarray (n_features, bins + 1)
+    - n_features: int, or None before the first chunk
+    - counts: np.ndarray of int (n_features, bins), values per bin (within the window)
+    - edges: np.ndarray (n_features, bins + 1), bin edges per feature
     - n_out_of_range: np.ndarray of int (n_features,), finite values outside the range
+    (within the window), so data drifting out of the chosen range is visible
+
+    Raises:
+    ------
+    - ValueError: if bins or window is not a positive integer, or value_range is not a
+    pair / sequence of pairs of finite numbers with low <= high
+
+    Complexity:
+    ----------
+    - Time complexity: O(b * d + d * bins) per chunk of b rows and d features
+    - Space complexity: O(d * bins) without a window, O(window * d * bins) with one
+
+    Note:
+    ----
+    - Bins are [edge_i, edge_i+1) except the last, which also includes ``high``, matching
+    np.histogram (including its correction for floating-point rounding at the edges).
+    - NaN values are skipped: neither binned nor counted as out of range.
+    - The window counts chunks, not rows: each chunk's counts are kept and subtracted
+    exactly when the chunk leaves the window.
+    - Adapted from ``histogram`` (NumCompute, Assignment 2.1), vectorised over features.
     """
 
     def __init__(self, bins, value_range, window=None):
-        raise NotImplementedError("StreamingHistogram is not implemented yet")
+        self.bins = check_positive_int(bins, "bins")
+        self.window = None if window is None else check_positive_int(window, "window")
+
+        try:
+            ranges = np.asarray(value_range, dtype=np.float64)
+        except (TypeError, ValueError):
+            ranges = None
+        if ranges is None or ranges.shape[-1:] != (2,) or ranges.ndim > 2:
+            raise ValueError("value_range must be a pair (low, high) or a sequence of one "
+                             f"pair per feature. Got: {value_range!r}")
+        if not np.isfinite(ranges).all():
+            raise ValueError("value_range must be finite.")
+        low, high = ranges[..., 0], ranges[..., 1]
+        if np.any(low > high):
+            raise ValueError(f"value_range must satisfy low <= high. Got: {value_range!r}")
+        equal = low == high
+        self._low = np.where(equal, low - 0.5, low)
+        self._high = np.where(equal, high + 0.5, high)
+        self._per_feature = ranges.ndim == 2
+
+        self.n_features = None
+        self._edges = None
+        self._counts = None
+        self._out = None
+        self._recent = deque()  # (counts, out) per chunk, only used with a window
+
+    def _init_state(self, n_features):
+        """Broadcast the range to every feature and build the edges, on the first chunk."""
+        if self._per_feature and self._low.shape[0] != n_features:
+            raise ValueError(f"value_range has {self._low.shape[0]} pairs but X has "
+                             f"{n_features} features.")
+        self.n_features = n_features
+        self._low = np.broadcast_to(self._low, (n_features,)).copy()
+        self._high = np.broadcast_to(self._high, (n_features,)).copy()
+        self._edges = np.linspace(self._low, self._high, self.bins + 1, axis=1)
+        self._counts = np.zeros((n_features, self.bins), dtype=np.int64)
+        self._out = np.zeros(n_features, dtype=np.int64)
 
     def update_stats(self, X_chunk):
-        """Add one chunk of shape (n_samples, n_features); returns self."""
-        raise NotImplementedError("StreamingHistogram is not implemented yet")
+        """
+        Add one chunk of data.
+
+        Parameters:
+        ----------
+        - X_chunk: array-like of shape (n_samples, n_features), numeric; NaN is skipped
+
+        Returns:
+        -------
+        - self, so calls can be chained
+
+        Raises:
+        ------
+        - ValueError: if X_chunk is not numeric, not 2-D, empty, or contains infinity
+        - ValueError: if the number of features differs from earlier chunks, or (first
+        chunk) from the number of per-feature value_range pairs
+
+        Complexity:
+        ----------
+        - Time complexity: O(b * d + d * bins)
+        - Space complexity: O(b * d) temporarily
+        """
+        X = check_array(X_chunk, name="X", allow_nan=True)
+        n_features = check_n_features(X, self.n_features)
+        if self.n_features is None:
+            self._init_state(n_features)
+
+        counts, out = self._count_chunk(X)
+        if self.window is not None:
+            if len(self._recent) == self.window:
+                old_counts, old_out = self._recent.popleft()
+                self._counts -= old_counts
+                self._out -= old_out
+            self._recent.append((counts, out))
+        self._counts += counts
+        self._out += out
+        return self
+
+    def _count_chunk(self, X):
+        """Return (counts (d, bins), out_of_range (d,)) for one validated chunk."""
+        finite = ~np.isnan(X)
+        inside = finite & (X >= self._low) & (X <= self._high)
+        out = (finite & ~inside).sum(axis=0)
+
+        # Bin index straight from the value; NaN/outside values are replaced by low first,
+        # so the float -> int cast never sees NaN (which would warn).
+        x = np.where(inside, X, self._low)
+        idx = np.floor((x - self._low) / (self._high - self._low) * self.bins)
+        idx = np.clip(idx.astype(np.intp), 0, self.bins - 1)
+
+        # Same rounding correction as np.histogram: nudge values that the division put
+        # one bin too far left or right, comparing against the actual edges.
+        cols = np.arange(self.n_features)
+        idx[x < self._edges[cols, idx]] -= 1
+        idx[(x >= self._edges[cols, idx + 1]) & (idx != self.bins - 1)] += 1
+
+        # Give each column its own block of bins, then count everything in one bincount.
+        flat = idx + cols * self.bins
+        counts = np.bincount(flat[inside], minlength=self.n_features * self.bins)
+        return counts.reshape(self.n_features, self.bins), out
+
+    def _check_seen(self):
+        if self.n_features is None:
+            raise RuntimeError("StreamingHistogram has seen no data yet; "
+                               "call update_stats first.")
+
+    @property
+    def counts(self):
+        """np.ndarray of int (n_features, bins): values per bin within the window."""
+        self._check_seen()
+        return self._counts.copy()
+
+    @property
+    def edges(self):
+        """np.ndarray (n_features, bins + 1): bin edges per feature."""
+        self._check_seen()
+        return self._edges.copy()
+
+    @property
+    def n_out_of_range(self):
+        """np.ndarray of int (n_features,): finite values outside the range (in window)."""
+        self._check_seen()
+        return self._out.copy()
