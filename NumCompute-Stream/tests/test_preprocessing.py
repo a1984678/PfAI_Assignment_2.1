@@ -9,7 +9,13 @@ as zero-variance chunks and all-NaN columns.
 import numpy as np
 import pytest
 
-from numcompute_stream.preprocessing import Imputer, MinMaxScaler, OneHotEncoder, StandardScaler
+from numcompute_stream.preprocessing import (
+    Imputer,
+    MinMaxScaler,
+    OneHotEncoder,
+    SimpleImputer,
+    StandardScaler,
+)
 
 
 def _partial_fit_in_chunks(scaler, X, chunk_size):
@@ -201,6 +207,19 @@ def test_imputer_errors():
         imputer.partial_fit(np.ones((2, 3)))
     with pytest.raises(ValueError, match="Incompatible dimensionality"):
         imputer.transform(np.ones((2, 3)))
+
+
+def test_simple_imputer_partial_fit_streams_with_fixed_fill_value():
+    imp = SimpleImputer(fill_value=-1)
+    assert SimpleImputer.supports_partial_fit
+    assert imp.partial_fit([[1.0, np.nan]]) is imp
+    imp.partial_fit([[np.nan, np.nan]])                  # all-NaN chunk is fine
+    np.testing.assert_array_equal(imp.transform([[np.nan, 2.0]]), [[-1, 2]])
+
+    with pytest.raises(ValueError, match="X has 3 features, but 2"):
+        imp.partial_fit(np.ones((1, 3)))
+    imp.fit(np.ones((2, 3)))                             # fit resets the feature count
+    assert imp.transform(np.full((1, 3), np.nan)).shape == (1, 3)
 
 
 # ---------------------------------------------------------------------

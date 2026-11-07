@@ -14,10 +14,11 @@ Streaming classes (``supports_partial_fit = True``):
 - ``Imputer``: fill values updated on the fly (mean, median or constant)
 - ``OneHotEncoder``: categories added incrementally; new categories get new output columns
   at the end, so existing columns never move
+- ``SimpleImputer``: constant fill (kept from Assignment 2.1); ``partial_fit`` only checks
+  the chunk
 
-For the streaming classes ``fit`` is a reset followed by one ``partial_fit``, so batch and
-streaming results share one code path. ``SimpleImputer`` (constant fill) is kept from
-Assignment 2.1. All classes are adapted from NumCompute (Assignment 2.1) and vectorised
+``fit`` is a reset followed by one ``partial_fit``, so batch and streaming results share one
+code path. All classes are adapted from NumCompute (Assignment 2.1) and vectorised
 with NumPy; the only Python loops are over features in ``OneHotEncoder``, whose number of
 categories differs per feature.
 """
@@ -680,6 +681,10 @@ class SimpleImputer(Transformer):
     """
     Impute missing values (NaN) with a constant value.
 
+    Supports streaming: the fill value never changes, so ``partial_fit`` only validates the
+    chunk and fixes the number of features. ``fit`` is a reset followed by one
+    ``partial_fit``. ``Imputer`` offers fill values learned from the data.
+
     Parameters:
     ----------
     - fill_value: scalar, default=0
@@ -687,7 +692,8 @@ class SimpleImputer(Transformer):
 
     Attributes:
     ----------
-    - columns_: int, the number of features in the training set.
+    - columns_: int, the number of features in the training set (2.1 name).
+    - n_features_in_: int, the same number (name shared with the other transformers).
 
     Complexity:
     ----------
@@ -697,7 +703,10 @@ class SimpleImputer(Transformer):
     Note:
     ----
     - All NaN column is allowed and will be filled with the fill_value.
+    - Infinite values are rejected when fitting, as in the other transformers.
     """
+
+    supports_partial_fit = True
 
     def __init__(self, fill_value=0):
         """
@@ -717,7 +726,7 @@ class SimpleImputer(Transformer):
 
     def fit(self, X, y=None):
         """
-        Fit the imputer on the data. For SimpleImputer, this just checks the input data and
+        Fit the imputer from scratch. For SimpleImputer, this just checks the input data and
         stores the number of features.
 
         Parameters:
@@ -731,7 +740,7 @@ class SimpleImputer(Transformer):
         Raises:
         ------
         - ValueError: if the input data is empty or not 2-dimensional
-
+        - ValueError: if X contains infinity
         """
         X = np.asarray(X, dtype=np.float64)
 
@@ -741,7 +750,41 @@ class SimpleImputer(Transformer):
         if X.size == 0:
             raise ValueError("Cannot fit SimpleImputer on an empty array.")
 
-        self.columns_ = X.shape[1]
+        self._reset()
+        return self.partial_fit(X)
+
+    def _reset(self):
+        """Forget the feature count so the next partial_fit starts from scratch."""
+        for attr in ("columns_", "n_features_in_"):
+            if hasattr(self, attr):
+                delattr(self, attr)
+
+    def partial_fit(self, X, y=None):
+        """
+        Check one chunk of data; the first chunk sets the number of features.
+
+        Parameters:
+        ----------
+        - X: array-like of shape (n_samples, n_features), one chunk; NaN allowed
+        - y: ignored, accepted for Pipeline compatibility
+
+        Returns:
+        -------
+        - self: object
+
+        Raises:
+        ------
+        - ValueError: if X is not numeric, not 2-D, empty, or contains infinity
+        - ValueError: if the number of features differs from earlier chunks
+
+        Complexity:
+        ----------
+        - Time complexity: O(n*m) for the validation of a chunk of n samples and m features
+        - Space complexity: O(1) state
+        """
+        X = check_array(X, name="X", allow_nan=True)
+        self.n_features_in_ = check_n_features(X, getattr(self, "n_features_in_", None))
+        self.columns_ = self.n_features_in_
         return self
 
     def transform(self, X):
