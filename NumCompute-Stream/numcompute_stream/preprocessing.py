@@ -4,7 +4,7 @@
 
   - Maintain running mean/var (e.g., Welford or EMA)
 
-- ``Imputer`` updates missing-value estimates on the fly
+- ``Imputer`` updates missing-value estimates on the fly (mean, median or constant)
 - ``OneHotEncoder`` expands categories incrementally
 
 Baseline (adapted from NumCompute, Assignment 2.1)
@@ -25,9 +25,9 @@ Fully vectorized using NumPy; avoid Python loops.
 
 import numpy as np
 
-from ._validation import check_array, check_n_features
+from ._validation import check_array, check_n_features, check_positive_int
 from .pipeline import Transformer
-from .stats import StreamingStats
+from .stats import StreamingQuantiles, StreamingStats
 
 
 class StandardScaler(Transformer):
@@ -540,6 +540,31 @@ class OneHotEncoder(Transformer):
         return np.hstack(encoded_columns).astype(np.float64)
 
 
+def _check_fill_value(fill_value):
+    """
+    Check an imputer fill value is a finite real number.
+
+    Parameters:
+    ----------
+    - fill_value: scalar
+
+    Returns:
+    -------
+    - fill_value, unchanged
+
+    Raises:
+    ------
+    - ValueError: if fill_value is not a number (bool is rejected, although Python counts it
+    as an int), or is NaN or infinite
+    """
+    # np.int64 and np.float64 are accepted, so large numbers work.
+    is_number = (isinstance(fill_value, (int, float, np.integer, np.floating))
+                 and not isinstance(fill_value, bool))
+    if not is_number or np.isnan(fill_value) or np.isinf(fill_value):
+        raise ValueError("fill_value must be a numeric type")
+    return fill_value
+
+
 class SimpleImputer(Transformer):
     """
     Impute missing values (NaN) with a constant value.
@@ -577,14 +602,7 @@ class SimpleImputer(Transformer):
         - ValueError: if fill_value is not a numeric type or is NaN or Inf
         """
 
-        # fill_value must be a real number (bool is rejected, although Python counts it as an
-        # int), not NaN or Inf. np.int64 and np.float64 are accepted, so large numbers work.
-        is_number = (isinstance(fill_value, (int, float, np.integer, np.floating))
-                     and not isinstance(fill_value, bool))
-        if not is_number or np.isnan(fill_value) or np.isinf(fill_value):
-            raise ValueError("fill_value must be a numeric type")
-
-        self.fill_value = fill_value
+        self.fill_value = _check_fill_value(fill_value)
 
     def fit(self, X, y=None):
         """
@@ -651,21 +669,157 @@ class Imputer(Transformer):
     """
     Replace missing values (NaN) with per-feature estimates updated on the fly.
 
-    Stub: not implemented yet (tests in tests/test_preprocessing.py define the behaviour).
+    Streaming counterpart of SimpleImputer: every ``partial_fit`` updates the running
+    estimate of each feature, and ``transform`` fills NaN with the current estimates.
 
     Parameters:
     ----------
-    - strategy: "mean" (StreamingStats), "median" (StreamingQuantiles) or "constant"
-    - fill_value: number, used by "constant" and for features with no values seen yet
-    - k, seed: reservoir size and seed for the "median" strategy
+    - strategy: str, default="mean"
+        - "mean": running mean per feature (``stats.StreamingStats``, exact)
+        - "median": median of a reservoir sample of rows (``stats.StreamingQuantiles``;
+        exact while at most k rows have been seen, an estimate after that). Robust to
+        outliers.
+        - "constant": always fill_value
+    - fill_value: finite number, default=0. Used by "constant", and by the other strategies
+    for a feature with no non-NaN values seen yet.
+    - k: int >= 1, reservoir size for "median" (default 1000)
+    - seed: int, random seed for "median" (default 0)
 
     Attributes:
     ----------
-    - statistics_: array of shape (n_features,), the current fill value per feature
-    - n_features_in_: int
+    - statistics_: array of shape (n_features,), the current fill value for each feature
+    - n_features_in_: int, number of features seen during fit / partial_fit
+
+    Raises:
+    ------
+    - ValueError: if strategy is unknown, fill_value is not a finite number, or k is not a
+    positive integer
+
+    Complexity:
+    ----------
+    - Time complexity: O(n*m) per partial_fit / transform for n samples and m features
+    ("median" adds O(k*m log k) per partial_fit to recompute the medians)
+    - Space complexity: O(m) for "mean" / "constant", O(k*m) for "median"
+
+    Note:
+    ----
+    - A feature with no values yet is filled with fill_value rather than left as NaN:
+    removing NaN is the imputer's job, and later steps (e.g. the tree) need complete data.
+    - fit is a reset followed by one partial_fit; like SimpleImputer it allows all-NaN
+    columns.
     """
 
     supports_partial_fit = True
+    _STRATEGIES = ("mean", "median", "constant")
 
     def __init__(self, strategy="mean", fill_value=0, k=1000, seed=0):
-        raise NotImplementedError("Imputer is not implemented yet")
+        if strategy not in self._STRATEGIES:
+            raise ValueError(f"strategy must be one of {self._STRATEGIES}. Got: {strategy!r}")
+        self.strategy = strategy
+        self.fill_value = _check_fill_value(fill_value)
+        self.k = check_positive_int(k, "k")
+        self.seed = seed
+
+    def fit(self, X, y=None):
+        """
+        Fit the imputer from scratch, discarding anything learned earlier.
+
+        Parameters:
+        ----------
+        - X: array-like of shape (n_samples, n_features); NaN allowed
+        - y: ignored, accepted for Pipeline compatibility
+
+        Returns:
+        -------
+        - self: object
+
+        Raises:
+        ------
+        - ValueError: if the input data is empty or not 2-dimensional
+        - ValueError: if X contains infinity
+        """
+        X = np.asarray(X, dtype=np.float64)
+
+        if X.ndim != 2:
+            raise ValueError("Input data must have 2 dimensions. Got shape: {}".format(X.shape))
+
+        if X.size == 0:
+            raise ValueError("Cannot fit Imputer on an empty array.")
+
+        self._reset()
+        return self.partial_fit(X)
+
+    def _reset(self):
+        """Forget all streaming state so the next partial_fit starts from scratch."""
+        self._stats = None
+        for attr in ("statistics_", "n_features_in_"):
+            if hasattr(self, attr):
+                delattr(self, attr)
+
+    def partial_fit(self, X, y=None):
+        """
+        Update the per-feature fill estimates with one chunk of data.
+
+        Parameters:
+        ----------
+        - X: array-like of shape (n_samples, n_features), one chunk; NaN allowed
+        - y: ignored, accepted for Pipeline compatibility
+
+        Returns:
+        -------
+        - self: object
+
+        Raises:
+        ------
+        - ValueError: if X is not numeric, not 2-D, empty, or contains infinity
+        - ValueError: if the number of features differs from earlier chunks
+        """
+        X = check_array(X, name="X", allow_nan=True)
+        n_features = check_n_features(X, getattr(self, "n_features_in_", None))
+
+        if getattr(self, "_stats", None) is None and self.strategy != "constant":
+            self._stats = (StreamingStats() if self.strategy == "mean"
+                           else StreamingQuantiles(k=self.k, seed=self.seed))
+
+        if self.strategy == "mean":
+            estimate = self._stats.update_stats(X).mean
+        elif self.strategy == "median":
+            estimate = self._stats.update_stats(X).quantile(0.5)
+        else:
+            estimate = np.full(n_features, np.nan)
+
+        # NaN means "no values seen for this feature yet" (or strategy "constant").
+        self.statistics_ = np.where(np.isnan(estimate), float(self.fill_value), estimate)
+        self.n_features_in_ = n_features
+        return self
+
+    def transform(self, X):
+        """
+        Replace NaN in each feature with that feature's current estimate.
+
+        Parameters:
+        ----------
+        - X: array-like of shape (n_samples, n_features)
+
+        Returns:
+        -------
+        - X_out: array of shape (n_samples, n_features) without NaN; other values unchanged
+
+        Raises:
+        ------
+        - RuntimeError: if fit / partial_fit has not been called before transform
+        - ValueError: if the input data is not 2-dimensional or has a different number of
+        features than the fitted data
+        """
+        if not hasattr(self, "statistics_"):
+            raise RuntimeError("fit must be called before transform.")
+
+        X = np.asarray(X, dtype=np.float64)
+
+        if X.ndim != 2:
+            raise ValueError("Input data must have 2 dimensions. Got shape: {}".format(X.shape))
+
+        if X.shape[1] != self.n_features_in_:
+            raise ValueError("Incompatible dimensionality.")
+
+        return np.where(np.isnan(X), self.statistics_, X)
