@@ -9,7 +9,7 @@ as zero-variance chunks and all-NaN columns.
 import numpy as np
 import pytest
 
-from numcompute_stream.preprocessing import StandardScaler
+from numcompute_stream.preprocessing import MinMaxScaler, StandardScaler
 
 
 def _partial_fit_in_chunks(scaler, X, chunk_size):
@@ -90,3 +90,60 @@ def test_standard_scaler_partial_fit_errors():
         scaler.partial_fit(np.ones((2, 2)))
     with pytest.raises(ValueError, match="2-dimensional"):
         scaler.partial_fit([1.0, 2.0])
+
+
+# ---------------------------------------------------------------------
+# MinMaxScaler.partial_fit
+# ---------------------------------------------------------------------
+
+@pytest.mark.parametrize("chunk_size", [1, 7, 60])
+def test_minmax_partial_fit_matches_fit(chunk_size):
+    """Streaming over any chunking (with scattered NaNs) equals fit on all the data."""
+    rng = np.random.default_rng(0)
+    X = rng.uniform(-5, 5, size=(60, 3)) * [1.0, 100.0, 0.01]
+    X[rng.random(X.shape) < 0.1] = np.nan
+    streamed = _partial_fit_in_chunks(MinMaxScaler(feature_range=(-1, 1)), X, chunk_size)
+    batch = MinMaxScaler(feature_range=(-1, 1)).fit(X)
+
+    np.testing.assert_array_equal(streamed.min_, batch.min_)
+    np.testing.assert_array_equal(streamed.max_, batch.max_)
+    np.testing.assert_allclose(streamed.transform(X), batch.transform(X))
+    assert streamed.n_features_in_ == 3
+    assert MinMaxScaler.supports_partial_fit is True
+
+
+def test_minmax_constant_so_far_then_range_grows():
+    """A column constant so far maps to feature_range[0]; new extremes widen the range."""
+    scaler = MinMaxScaler()
+    assert scaler.partial_fit([[4.0], [4.0]]) is scaler
+    np.testing.assert_array_equal(scaler.transform([[4.0]]), [[0.0]])
+
+    scaler.partial_fit([[0.0], [8.0]])
+    np.testing.assert_allclose(scaler.transform([[0.0], [4.0], [8.0]]), [[0.0], [0.5], [1.0]])
+
+
+def test_minmax_all_nan_column_in_early_chunk():
+    """Same contract as StandardScaler: NaN output (no warnings) until data arrives."""
+    scaler = MinMaxScaler().partial_fit([[1.0, np.nan], [3.0, np.nan]])
+    out = scaler.transform([[2.0, 5.0]])
+    assert out[0, 0] == 0.5 and np.isnan(out[0, 1])
+
+    scaler.partial_fit([[2.0, 0.0], [2.0, 10.0]])
+    np.testing.assert_allclose(scaler.transform([[2.0, 5.0]]), [[0.5, 0.5]])
+
+    with pytest.raises(ValueError, match="all NaN"):
+        MinMaxScaler().fit([[1.0, np.nan], [3.0, np.nan]])
+
+
+def test_minmax_fit_resets_partial_fit_continues_and_huge_range():
+    refit = MinMaxScaler().partial_fit([[-100.0], [100.0]]).fit([[0.0], [1.0]])
+    np.testing.assert_array_equal(refit.min_, [0.0])
+
+    # the 2.1 overflow guard (max - min of +-1e308) must hold when the extremes arrive
+    # in different chunks, after a fit
+    scaler = MinMaxScaler().fit([[-1e308]]).partial_fit([[1e308]])
+    np.testing.assert_allclose(scaler.transform([[-1e308], [0.0], [1e308]]),
+                               [[0.0], [0.5], [1.0]])
+
+    with pytest.raises(ValueError, match="X has 2 features, but 1"):
+        scaler.partial_fit(np.ones((2, 2)))
