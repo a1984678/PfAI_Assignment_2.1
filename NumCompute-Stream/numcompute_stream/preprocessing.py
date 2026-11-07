@@ -185,6 +185,9 @@ class MinMaxScaler(Transformer):
     """
     Transform features by scaling each feature to a given range.
 
+    Supports streaming: ``partial_fit`` keeps a running per-feature min and max (NaN-aware
+    np.fmin / np.fmax, no stored data). ``fit`` is a reset followed by one ``partial_fit``.
+
     Parameters:
     ----------
     - feature_range: tuple (min, max), default=(0, 1)
@@ -192,26 +195,34 @@ class MinMaxScaler(Transformer):
 
     Attributes:
     ----------
-    - min_: array of shape (n_features,), the minimum value for each feature in the training set.
-    - max_: array of shape (n_features,), the maximum value for each feature in the training set.
-    - scale_: array of shape (n_features,), the scaling factor for each feature in the training set.
+    - min_: array of shape (n_features,), the minimum of each feature over all data seen
+    (NaN for a feature with no non-NaN values yet, streaming only).
+    - max_: array of shape (n_features,), the maximum of each feature over all data seen.
+    - scale_: array of shape (n_features,), the scaling factor for each feature.
+    - n_features_in_: int, number of features seen during fit / partial_fit.
 
     Complexity:
     ----------
     - Time complexity:
         - fit: O(n*m) where n is the number of samples and m is the number of features.
         - transform: O(n*m) where n is the number of samples and m is the number of features.
-    - Space complexity: O(n*m) for storing the transformed data in memory.
+    - Space complexity: O(m) state; O(n*m) for the transformed output.
 
     Note:
     ----
     - NaN values are ignored in the computation of min and max.
+    - fit raises on a column that is entirely NaN; partial_fit allows it and the column
+    transforms to NaN until a later chunk provides data (as StandardScaler).
     - In a constant column the range is treated as 1 to avoid division by zero, so these
     training values map to feature_range[0].
     - NaN values in the input data will remain NaN in the output data after transformation.
     - There is no clipping of values outside the feature_range; values can exceed the specified
     range if they are outside the min and max of the training data.
+    - Adapted from NumCompute (Assignment 2.1), including its overflow-safe half-range
+    arithmetic, which now runs after every chunk.
     """
+
+    supports_partial_fit = True
 
     def __init__(self, feature_range=(0, 1)):
         """
@@ -242,11 +253,12 @@ class MinMaxScaler(Transformer):
 
     def fit(self, X, y=None):
         """
-        Fit the scaler on the data by computing the min and max for each feature.
+        Fit the scaler from scratch, discarding anything learned earlier.
 
         Parameters:
         ----------
         - X: array-like of shape (n_samples, n_features)
+        - y: ignored, accepted for Pipeline compatibility
 
         Returns:
         -------
@@ -256,6 +268,7 @@ class MinMaxScaler(Transformer):
         ------
         - ValueError: if the input data is empty or not 2-dimensional
         - ValueError: if any column has all NaN values
+        - ValueError: if X contains infinity
         """
         X = np.asarray(X, dtype=np.float64)
 
@@ -268,21 +281,66 @@ class MinMaxScaler(Transformer):
         if np.any(np.all(np.isnan(X), axis=0)):
             raise ValueError("Cannot fit MinMaxScaler on a column with all NaN values.")
 
-        self.min_ = np.nanmin(X, axis=0)
-        self.max_ = np.nanmax(X, axis=0)
+        self._reset()
+        return self.partial_fit(X)
 
+    def _reset(self):
+        """Forget all streaming state so the next partial_fit starts from scratch."""
+        for attr in ("min_", "max_", "scale_", "n_features_in_"):
+            if hasattr(self, attr):
+                delattr(self, attr)
+
+    def partial_fit(self, X, y=None):
+        """
+        Update the running min and max with one chunk of data.
+
+        Parameters:
+        ----------
+        - X: array-like of shape (n_samples, n_features), one chunk; NaN allowed
+        - y: ignored, accepted for Pipeline compatibility
+
+        Returns:
+        -------
+        - self: object
+
+        Raises:
+        ------
+        - ValueError: if X is not numeric, not 2-D, empty, or contains infinity
+        - ValueError: if the number of features differs from earlier chunks
+
+        Complexity:
+        ----------
+        - Time complexity: O(n*m) for a chunk of n samples and m features
+        - Space complexity: O(m) state
+        """
+        X = check_array(X, name="X", allow_nan=True)
+        n_features = check_n_features(X, getattr(self, "n_features_in_", None))
+
+        # fmin / fmax ignore NaN (NaN only where both sides are NaN) and never warn, unlike
+        # np.nanmin on an all-NaN column.
+        chunk_min = np.fmin.reduce(X, axis=0)
+        chunk_max = np.fmax.reduce(X, axis=0)
+        if hasattr(self, "min_"):
+            chunk_min = np.fmin(self.min_, chunk_min)
+            chunk_max = np.fmax(self.max_, chunk_max)
+        self.min_, self.max_ = chunk_min, chunk_max
+        self.n_features_in_ = n_features
+        self._update_scale()
+        return self
+
+    def _update_scale(self):
+        """Recompute scale_ from min_ and max_ (overflow-safe, constant columns -> range 1)."""
         # max - min overflows to inf for a range like -1e308 to 1e308, so work with half the
         # range. Halving is exact in floating point, so normal data gives the same result.
         half_range = self.max_ / 2 - self.min_ / 2
 
-        # Replace zero ranges before dividing, so no inf is produced (a range of 1 is used)
+        # Replace zero ranges before dividing, so no inf is produced (a range of 1 is used).
+        # A column with no values yet has a NaN range, so its scale_ (and output) is NaN.
         is_constant = half_range == 0
         safe_half_range = np.where(is_constant, 0.5, half_range)
 
         # scale_ is (high - low) / (max - min), written so that max - min is never formed
         self.scale_ = (self.feature_range[1] - self.feature_range[0]) / 2 / safe_half_range
-
-        return self
 
     def transform(self, X):
         """
