@@ -991,3 +991,31 @@ class StreamingQuantiles:
         # All-NaN columns are left as NaN; nanquantile would warn on them.
         out[..., has_values] = np.nanquantile(data[:, has_values], q, axis=0)
         return out
+
+
+class StreamingHistogram:
+    """
+    Per-feature histogram over a stream, with an optional sliding window of recent chunks.
+
+    Stub: not implemented yet (tests in tests/test_stats.py define the behaviour).
+
+    Parameters:
+    ----------
+    - bins: int >= 1, equal-width bins per feature
+    - value_range: (low, high) shared by every feature, or a sequence of one (low, high)
+    pair per feature; required (a range inferred from the data breaks on outliers)
+    - window: int >= 1 or None, number of most recent chunks counted (None = all)
+
+    Attributes:
+    ----------
+    - counts: np.ndarray of int (n_features, bins)
+    - edges: np.ndarray (n_features, bins + 1)
+    - n_out_of_range: np.ndarray of int (n_features,), finite values outside the range
+    """
+
+    def __init__(self, bins, value_range, window=None):
+        raise NotImplementedError("StreamingHistogram is not implemented yet")
+
+    def update_stats(self, X_chunk):
+        """Add one chunk of shape (n_samples, n_features); returns self."""
+        raise NotImplementedError("StreamingHistogram is not implemented yet")

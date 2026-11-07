@@ -8,7 +8,7 @@ results agree with full-batch results.
 import numpy as np
 import pytest
 
-from numcompute_stream.stats import StreamingQuantiles, StreamingStats
+from numcompute_stream.stats import StreamingHistogram, StreamingQuantiles, StreamingStats
 
 
 def _stream(X, chunk_size):
@@ -245,3 +245,94 @@ def test_quantiles_before_data_and_bad_input():
     s.update_stats(np.ones((3, 2)))
     with pytest.raises(ValueError, match="X has 3 features, but 2"):
         s.update_stats(np.ones((3, 3)))
+
+
+# ---------------------------------------------------------------------
+# StreamingHistogram (fixed bins, optional sliding window over chunks)
+# ---------------------------------------------------------------------
+
+def _stream_h(X, chunk_size, **kwargs):
+    """Feed X to a fresh StreamingHistogram in chunks of chunk_size rows."""
+    h = StreamingHistogram(**kwargs)
+    for start in range(0, len(X), chunk_size):
+        h.update_stats(X[start:start + chunk_size])
+    return h
+
+
+@pytest.mark.parametrize("chunk_size", [1, 13, 500])
+def test_histogram_streaming_matches_np_histogram_per_column(chunk_size):
+    X = np.random.default_rng(0).normal(size=(500, 3))
+    h = _stream_h(X, chunk_size, bins=8, value_range=(-2.0, 2.0))
+    assert h.counts.shape == (3, 8) and h.edges.shape == (3, 9)
+    for col in range(3):
+        counts, edges = np.histogram(X[:, col], bins=8, range=(-2.0, 2.0))
+        np.testing.assert_array_equal(h.counts[col], counts)
+        np.testing.assert_allclose(h.edges[col], edges)
+
+
+def test_histogram_per_feature_ranges():
+    X = np.column_stack([np.linspace(0, 1, 50), np.linspace(100, 200, 50)])
+    h = _stream_h(X, 7, bins=5, value_range=[(0, 1), (100, 200)])
+    for col, rng in enumerate([(0, 1), (100, 200)]):
+        np.testing.assert_array_equal(h.counts[col], np.histogram(X[:, col], 5, rng)[0])
+
+
+def test_histogram_right_edge_inclusive_and_out_of_range_counted():
+    """Like np.histogram the last bin includes `high`; outside values are counted apart."""
+    X = np.array([[0.0], [0.5], [1.0], [-0.1], [1.1], [2.0]])
+    h = _stream_h(X, 2, bins=2, value_range=(0, 1))
+    np.testing.assert_array_equal(h.counts, [[1, 2]])
+    np.testing.assert_array_equal(h.n_out_of_range, [3])
+
+
+def test_histogram_skips_nan():
+    X = np.array([[np.nan, 1.0], [0.2, np.nan], [0.8, 0.4]])
+    h = _stream_h(X, 1, bins=2, value_range=(0, 1))
+    np.testing.assert_array_equal(h.counts, [[1, 1], [1, 1]])
+    np.testing.assert_array_equal(h.n_out_of_range, [0, 0])
+
+
+def test_histogram_sliding_window_keeps_only_recent_chunks():
+    """window=2: only the last two chunks count, for both counts and out-of-range."""
+    h = StreamingHistogram(bins=2, value_range=(0, 1), window=2)
+    h.update_stats([[0.1], [0.1], [5.0]])   # dropped once the third chunk arrives
+    h.update_stats([[0.9]])
+    h.update_stats([[0.2], [0.7]])
+    np.testing.assert_array_equal(h.counts, [[1, 2]])
+    np.testing.assert_array_equal(h.n_out_of_range, [0])
+
+
+def test_histogram_window_larger_than_chunks_seen_uses_everything():
+    X = np.random.default_rng(1).uniform(size=(40, 2))
+    windowed = _stream_h(X, 10, bins=4, value_range=(0, 1), window=100)
+    full = _stream_h(X, 10, bins=4, value_range=(0, 1))
+    np.testing.assert_array_equal(windowed.counts, full.counts)
+
+
+def test_histogram_equal_low_high_widened_like_baseline():
+    h = _stream_h(np.full((4, 1), 3.0), 2, bins=2, value_range=(3, 3))
+    np.testing.assert_allclose(h.edges, [[2.5, 3.0, 3.5]])
+    np.testing.assert_array_equal(h.counts, [[0, 4]])
+
+
+@pytest.mark.parametrize("kwargs, match", [
+    (dict(bins=0, value_range=(0, 1)), "bins must be a positive integer"),
+    (dict(bins=3, value_range=(1, 0)), "low <= high"),
+    (dict(bins=3, value_range=(0, np.inf)), "finite"),
+    (dict(bins=3, value_range="ab"), "pair"),
+    (dict(bins=3, value_range=(0, 1), window=0), "window must be a positive integer"),
+])
+def test_histogram_invalid_parameters(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        StreamingHistogram(**kwargs)
+
+
+def test_histogram_range_count_and_feature_checks():
+    h = StreamingHistogram(bins=2, value_range=[(0, 1), (0, 1)])
+    with pytest.raises(RuntimeError, match="no data"):
+        h.counts
+    with pytest.raises(ValueError, match="value_range has 2 pairs but X has 3 features"):
+        h.update_stats(np.ones((2, 3)))
+    h.update_stats(np.ones((2, 2)))
+    with pytest.raises(ValueError, match="X has 1 features, but 2"):
+        h.update_stats(np.ones((2, 1)))
