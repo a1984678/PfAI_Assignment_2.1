@@ -22,7 +22,7 @@ import warnings
 
 import numpy as np
 
-from ._validation import check_array, check_n_features
+from ._validation import check_array, check_n_features, check_positive_int
 
 
 # ---------------------------------------------------------------------
@@ -851,27 +851,143 @@ class StreamingQuantiles:
     """
     Approximate per-feature quantiles of a stream, using a uniform random sample of rows.
 
-    Stub: not implemented yet (tests in tests/test_stats.py define the behaviour).
+    Keeps a reservoir of at most k rows (reservoir sampling, Algorithm R, vectorised per
+    chunk): the i-th row of the stream (0-based) replaces a random reservoir slot with
+    probability k / (i + 1), so at any time every row seen so far is equally likely to be
+    in the sample. Quantiles are then computed exactly on the sample.
 
     Parameters:
     ----------
     - k: int >= 1, reservoir size in rows (default 1000); memory is O(k * n_features)
-    - seed: int, seed for the random generator (default 0)
+    - seed: int, seed for the random generator (default 0), so results are reproducible
 
     Attributes:
     ----------
     - n_features: int, or None before the first chunk
     - n_seen: int, rows seen so far
     - sample: np.ndarray (min(n_seen, k), n_features), copy of the current reservoir
+
+    Raises:
+    ------
+    - ValueError: if k is not a positive integer
+
+    Complexity:
+    ----------
+    - Time complexity: O(b * d + b log b) per chunk of b rows (the log term from removing
+    duplicate slots); O(k * d log k) per quantile call
+    - Space complexity: O(k * d)
+
+    Note:
+    ----
+    - Exact while n_seen <= k (the reservoir then holds every row). Beyond that the result
+    is an estimate whose rank error shrinks roughly as 1 / sqrt(k), whatever the data's
+    distribution (chosen over a histogram, which fails on heavy-tailed data).
+    - Whole rows are sampled, so all columns share one reservoir; NaN is skipped per
+    column when computing quantiles. A column with many NaNs therefore has fewer real
+    values in the sample and a less accurate estimate.
     """
 
     def __init__(self, k=1000, seed=0):
-        raise NotImplementedError("StreamingQuantiles is not implemented yet")
+        self.k = check_positive_int(k, "k")
+        self._rng = np.random.default_rng(seed)
+        self.n_features = None
+        self.n_seen = 0
+        self._buf = None
+        self._size = 0  # filled rows of the reservoir, min(n_seen, k)
 
     def update_stats(self, X_chunk):
-        """Add one chunk of shape (n_samples, n_features); returns self."""
-        raise NotImplementedError("StreamingQuantiles is not implemented yet")
+        """
+        Add one chunk of data to the reservoir.
+
+        Parameters:
+        ----------
+        - X_chunk: array-like of shape (n_samples, n_features), numeric; NaN allowed
+
+        Returns:
+        -------
+        - self, so calls can be chained
+
+        Raises:
+        ------
+        - ValueError: if X_chunk is not numeric, not 2-D, empty, or contains infinity
+        - ValueError: if the number of features differs from earlier chunks
+
+        Complexity:
+        ----------
+        - Time complexity: O(b * d + b log b)
+        - Space complexity: O(b * d) temporarily
+        """
+        X = check_array(X_chunk, name="X", allow_nan=True)
+        self.n_features = check_n_features(X, self.n_features)
+        if self._buf is None:
+            self._buf = np.empty((self.k, self.n_features))
+
+        # Fill phase: while the reservoir has room, every row is kept.
+        n_fill = np.minimum(self.k - self._size, X.shape[0])
+        self._buf[self._size:self._size + n_fill] = X[:n_fill]
+        self._size += n_fill
+
+        # Replacement phase: row with global index i picks a slot j uniformly in [0, i];
+        # it is kept (at slot j) only if j < k, i.e. with probability k / (i + 1).
+        rest = X[n_fill:]
+        if rest.shape[0]:
+            index = self.n_seen + n_fill + np.arange(rest.shape[0])
+            slot = self._rng.integers(0, index + 1)
+            kept = slot < self.k
+            slot, rows = slot[kept], rest[kept]
+            # Several rows in one chunk can pick the same slot. Processed one at a time, the
+            # last of them would win, so keep only each slot's last occurrence (NumPy does
+            # not guarantee which write wins for repeated indices in one assignment).
+            _, first_in_reversed = np.unique(slot[::-1], return_index=True)
+            last = slot.size - 1 - first_in_reversed
+            self._buf[slot[last]] = rows[last]
+
+        self.n_seen += X.shape[0]
+        return self
+
+    @property
+    def sample(self):
+        """np.ndarray (min(n_seen, k), n_features): copy of the current reservoir."""
+        self._check_seen()
+        return self._buf[:self._size].copy()
+
+    def _check_seen(self):
+        if self.n_features is None:
+            raise RuntimeError("StreamingQuantiles has seen no data yet; "
+                               "call update_stats first.")
 
     def quantile(self, q):
-        """Per-feature quantiles: shape (n_features,) for scalar q, (len(q), n_features)."""
-        raise NotImplementedError("StreamingQuantiles is not implemented yet")
+        """
+        Per-feature quantiles of the sampled data (linear interpolation, as np.quantile).
+
+        Parameters:
+        ----------
+        - q: float or array-like of floats in [0, 1]
+
+        Returns:
+        -------
+        - np.ndarray of shape (n_features,) for scalar q, or (len(q), n_features) for an
+        array of q (the layout of np.quantile(X, q, axis=0)). NaN for a column with no
+        non-NaN values in the sample.
+
+        Raises:
+        ------
+        - ValueError: if any q is outside [0, 1] (or NaN)
+        - RuntimeError: if no data has been seen
+
+        Complexity:
+        ----------
+        - Time complexity: O(k * d log k)
+        - Space complexity: O(k * d)
+        """
+        q = np.asarray(q, dtype=np.float64)
+        if not np.all((q >= 0) & (q <= 1)):
+            raise ValueError(f"q must be in [0, 1]. Got: {q}")
+        self._check_seen()
+
+        data = self._buf[:self._size]
+        has_values = ~np.isnan(data).all(axis=0)
+        out = np.full(q.shape + (self.n_features,), np.nan)
+        # All-NaN columns are left as NaN; nanquantile would warn on them.
+        out[..., has_values] = np.nanquantile(data[:, has_values], q, axis=0)
+        return out
