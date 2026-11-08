@@ -130,8 +130,8 @@ def test_stopping_rules_pure_constant_and_ties():
     np.testing.assert_array_equal(const.predict_proba([[0.0, 0.0]]), [[0.5, 0.5]])
 
     # tie between features: the lowest feature index wins
-    twins = DecisionTreeClassifier().fit(np.repeat(X, 2, axis=1), y > 9)
-    assert twins.feature_[0] == 0
+    twins = DecisionTreeClassifier().fit(np.repeat(X, 2, axis=1), np.arange(20) > 9)
+    assert twins.feature_[0] == 0 and twins.threshold_[0] == 9.5
 
 
 def test_max_features_is_seeded_and_reproducible():
