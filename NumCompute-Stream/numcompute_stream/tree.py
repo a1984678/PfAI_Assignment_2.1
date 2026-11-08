@@ -129,11 +129,17 @@ class DecisionTreeClassifier(Estimator):
     preorder; a leaf has feature -1, threshold NaN and children -1
     - value_: np.ndarray of shape (n_nodes, n_classes), training class counts per node
     - n_nodes_, depth_: int
+    - n_buffered_: int, rows waiting in the partial_fit buffer (always available)
+    - n_retrains_: int, trees trained by partial_fit since construction or the last fit
+
+    Memory: the buffer holds at most buffer_size + chunk_size - 1 rows.
 
     Raises:
     ------
     - ValueError: for invalid hyperparameters (at construction)
     """
+
+    supports_partial_fit = True
 
     def __init__(self, max_depth=5, min_samples_split=2, max_features=None,
                  buffer_size=500, criterion="gini", seed=0):
@@ -154,6 +160,25 @@ class DecisionTreeClassifier(Estimator):
         self.buffer_size = check_positive_int(buffer_size, "buffer_size")
         self.criterion = criterion
         self.seed = seed
+        self._reset_stream()
+
+    def _reset_stream(self):
+        """Empty the partial_fit buffer and the retrain counter."""
+        self._buffer_X, self._buffer_y = [], []
+        self._n_retrains = 0
+
+    @property
+    def n_buffered_(self):
+        return sum(len(chunk) for chunk in self._buffer_y)
+
+    @property
+    def n_retrains_(self):
+        return self._n_retrains
+
+    def _check_max_features(self, n_features):
+        if self.max_features is not None and self.max_features > n_features:
+            raise ValueError(f"max_features={self.max_features} is larger than the number "
+                             f"of features ({n_features}).")
 
     def fit(self, X, y):
         """
@@ -171,14 +196,14 @@ class DecisionTreeClassifier(Estimator):
         Raises:
         ------
         - ValueError: if X or y is invalid, or max_features > n_features
+
+        Any partial_fit buffer is cleared: fit always starts again.
         """
         X, y = check_X_y(X, y)
-        n_features = X.shape[1]
-        if self.max_features is not None and self.max_features > n_features:
-            raise ValueError(f"max_features={self.max_features} is larger than the number "
-                             f"of features ({n_features}).")
+        self._check_max_features(X.shape[1])
+        self._reset_stream()
         self.classes_, y = np.unique(y, return_inverse=True)
-        self.n_features_in_ = n_features
+        self.n_features_in_ = X.shape[1]
         self._build(X, y)
         return self
 
@@ -238,8 +263,9 @@ class DecisionTreeClassifier(Estimator):
         loop runs depth_ times, not n_samples times.
         """
         if not hasattr(self, "feature_"):
-            raise RuntimeError(f"{type(self).__name__} is not fitted yet; call fit or "
-                               "partial_fit first.")
+            raise RuntimeError(f"{type(self).__name__} is not fitted yet; call fit, or "
+                               f"partial_fit until the buffer is full ({self.n_buffered_}/"
+                               f"{self.buffer_size} samples buffered).")
         X = check_array(X)
         check_n_features(X, self.n_features_in_)
         at = np.zeros(X.shape[0], dtype=np.int64)
@@ -277,7 +303,30 @@ class DecisionTreeClassifier(Estimator):
         left unchanged)
         - TypeError: if string and numeric labels are mixed across chunks
         """
-        raise NotImplementedError
+        # validate everything first, so a bad chunk leaves the state unchanged
+        X, y = check_X_y(X, y)
+        n_features = check_n_features(X, getattr(self, "n_features_in_", None))
+        self._check_max_features(n_features)
+        seen = self.classes_ if hasattr(self, "classes_") else (
+            self._buffer_y[0] if self._buffer_y else None)
+        if seen is not None and (seen.dtype.kind in "US") != (y.dtype.kind in "US"):
+            # np.union1d / concatenate would silently turn the number 1 into the string "1"
+            raise TypeError("Mixed label types across chunks, use all numbers or all strings.")
+
+        self.n_features_in_ = n_features
+        self._buffer_X.append(X)
+        self._buffer_y.append(y)
+        if self.n_buffered_ >= self.buffer_size:
+            X_all = np.concatenate(self._buffer_X)
+            y_all = np.concatenate(self._buffer_y)
+            classes = np.unique(y_all)
+            if hasattr(self, "classes_"):
+                classes = np.union1d(self.classes_, classes)   # keep earlier classes
+            self.classes_ = classes
+            self._build(X_all, np.searchsorted(classes, y_all))
+            self._buffer_X, self._buffer_y = [], []
+            self._n_retrains += 1
+        return self
 
     def predict_proba(self, X):
         """
