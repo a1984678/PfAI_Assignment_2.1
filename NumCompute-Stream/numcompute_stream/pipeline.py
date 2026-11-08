@@ -399,3 +399,60 @@ class Pipeline:
         if not hasattr(estimator, "predict"):
             raise TypeError(f"Final pipeline step {name!r} must implement predict")
         return estimator.predict(transformed)
+
+    @property
+    def supports_partial_fit(self):
+        """
+        True if every step supports partial_fit (so a Pipeline can be a step of another).
+
+        A step counts as streaming if its supports_partial_fit flag is True, or, for an
+        object without the flag, if it has a partial_fit method. An empty Pipeline is True.
+        """
+        raise NotImplementedError
+
+    def partial_fit(self, X, y=None):
+        """
+        Update every step with one chunk, in order (streaming).
+
+        Each transformer is updated with partial_fit(X, y) and then transforms the chunk for
+        the next step; the final step gets partial_fit(X, y). So the chunk is transformed
+        with statistics that already include it, as in fit_transform.
+
+        Parameters:
+        ----------
+        - X: array-like of shape (n_samples, n_features), one chunk of the stream
+        - y: array-like of shape (n_samples,), labels for the chunk (default None)
+
+        Returns:
+        -------
+        - self
+
+        Raises:
+        ------
+        - TypeError: if any step does not support partial_fit, checked for all steps before
+        any step is updated
+        - ValueError: if a transformer's output width differs from the first chunk (e.g. a
+        OneHotEncoder finds a new category). Steps before it have already absorbed the chunk.
+        Fit the encoder on all known categories first to keep the width fixed.
+        - Anything a step raises for an invalid chunk
+        """
+        raise NotImplementedError
+
+    def predict_proba(self, X):
+        """
+        Transform the data through all transformers, then call the final predict_proba.
+
+        Parameters:
+        ----------
+        - X: array-like of shape (n_samples, n_features)
+
+        Returns:
+        -------
+        - np.ndarray of shape (n_samples, n_classes), from the final step
+
+        Raises:
+        ------
+        - ValueError: if the pipeline has no steps
+        - TypeError: if the final step does not implement predict_proba
+        """
+        raise NotImplementedError
