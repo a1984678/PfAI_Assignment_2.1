@@ -1,30 +1,27 @@
 """Streaming classification metrics.
 
-- All classification metrics (``accuracy``, ``precision``, ``recall``, etc.)
-  must support:
+Streaming API (each class has ``update(y_true_chunk, y_pred_chunk) -> self``,
+``reset() -> self`` and ``result()``; ``window=w`` scores only the last w chunks):
 
-  - Streaming updates via ``update(y_true_chunk, y_pred_chunk)``
-  - ``reset()``, ``result()`` methods
+- ``StreamingConfusionMatrix(labels=None, window=None)``: counts accumulate over chunks;
+  classes are added (in sorted order) as they first appear
+- ``Accuracy``, ``Precision``, ``Recall``, ``F1``: scores computed from a streaming
+  confusion matrix with the 2.1 formulas, so a streamed result equals the batch function
+  on the same data. ``result()`` is NaN before any data; 0/0 per class is 0.0 (as in 2.1)
 
-- Confusion matrix and AUC must accumulate over time
-- Include support for rolling-window metrics
-
-Baseline (adapted from NumCompute, Assignment 2.1)
---------------------------------------------------
-Classification:
-- accuracy
-- precision
-- recall
-- f1
-- confusion_matrix
-
-Regression:
-- mse(y_true, y_pred)
-
-Bonus:
+Batch functions (adapted from NumCompute, Assignment 2.1)
+---------------------------------------------------------
+- Classification: accuracy, precision, recall, f1, confusion_matrix
+- Regression: mse(y_true, y_pred)
 - roc_curve and auc for binary classification
+
+Fully vectorised with NumPy (np.bincount for counting, no loops over samples).
 """
+from collections import deque
+
 import numpy as np
+
+from ._validation import check_positive_int
 
 _AVERAGES = ("binary", "macro")
 
@@ -185,11 +182,69 @@ def _class_counts(y_true, y_pred):
     - Space complexity: O(n + k^2)
     """
     labels = np.union1d(y_true, y_pred)
-    cm = confusion_matrix(y_true, y_pred, labels=labels)
+    tp, fp, fn = _counts_from_matrix(confusion_matrix(y_true, y_pred, labels=labels))
+    return labels, tp, fp, fn
+
+
+def _counts_from_matrix(cm):
+    """
+    Per-class true positives, false positives and false negatives of a confusion matrix.
+
+    Parameters:
+    ----------
+    - cm: np.ndarray of shape (n_classes, n_classes), rows true and columns predicted
+
+    Returns:
+    -------
+    - tp, fp, fn: np.ndarray of shape (n_classes,) each
+
+    Complexity:
+    ----------
+    - Time and space complexity: O(k^2) where k is the number of classes
+    """
     tp = np.diag(cm)
     fp = cm.sum(axis=0) - tp
     fn = cm.sum(axis=1) - tp
-    return labels, tp, fp, fn
+    return tp, fp, fn
+
+
+def _precision_per_class(tp, fp, fn):
+    """TP / (TP + FP) per class, 0.0 where nothing was predicted as that class."""
+    return _safe_divide(tp, tp + fp)
+
+
+def _recall_per_class(tp, fp, fn):
+    """TP / (TP + FN) per class, 0.0 where the class never occurred."""
+    return _safe_divide(tp, tp + fn)
+
+
+def _f1_per_class(tp, fp, fn):
+    """2PR / (P + R) per class, 0.0 where precision and recall are both 0."""
+    p = _precision_per_class(tp, fp, fn)
+    r = _recall_per_class(tp, fp, fn)
+    return _safe_divide(2 * p * r, p + r)
+
+
+def _check_average(average):
+    """Raise ValueError unless average is 'binary' or 'macro'."""
+    if average not in _AVERAGES:
+        raise ValueError("average must be 'binary' or 'macro'. Got: {!r}".format(average))
+
+
+def _check_labels(labels):
+    """
+    Convert a user-given label order to an array.
+
+    Raises:
+    ------
+    - ValueError: if labels is empty, not 1-dimensional or has duplicates
+    """
+    labels = np.asarray(labels)
+    if labels.ndim != 1 or labels.size == 0:
+        raise ValueError("labels must be a non-empty 1-dimensional array.")
+    if np.unique(labels).size != labels.size:
+        raise ValueError("labels must not contain duplicates.")
+    return labels
 
 
 def _select(labels, per_class, pos_label, average):
@@ -217,8 +272,7 @@ def _select(labels, per_class, pos_label, average):
     - Time complexity: O(k) where k is the number of classes
     - Space complexity: O(k)
     """
-    if average not in _AVERAGES:
-        raise ValueError("average must be 'binary' or 'macro'. Got: {!r}".format(average))
+    _check_average(average)
 
     if average == "macro":
         return float(np.mean(per_class))
@@ -279,11 +333,7 @@ def confusion_matrix(y_true, y_pred, labels=None):
     if labels is None:
         labels = np.union1d(y_true, y_pred)
     else:
-        labels = np.asarray(labels)
-        if labels.ndim != 1 or labels.size == 0:
-            raise ValueError("labels must be a non-empty 1-dimensional array.")
-        if np.unique(labels).size != labels.size:
-            raise ValueError("labels must not contain duplicates.")
+        labels = _check_labels(labels)
 
     n_classes = labels.size
     true_idx = _label_indices(y_true, labels)
@@ -351,8 +401,8 @@ def precision(y_true, y_pred, pos_label=1, average="binary"):
     - If nothing is predicted positive (TP + FP = 0) the score is defined as 0.0.
     """
     y_true, y_pred = _check_targets(y_true, y_pred)
-    labels, tp, fp, _ = _class_counts(y_true, y_pred)
-    return _select(labels, _safe_divide(tp, tp + fp), pos_label, average)
+    labels, tp, fp, fn = _class_counts(y_true, y_pred)
+    return _select(labels, _precision_per_class(tp, fp, fn), pos_label, average)
 
 
 def recall(y_true, y_pred, pos_label=1, average="binary"):
@@ -385,8 +435,8 @@ def recall(y_true, y_pred, pos_label=1, average="binary"):
     - If there are no true positives to find (TP + FN = 0) the score is defined as 0.0.
     """
     y_true, y_pred = _check_targets(y_true, y_pred)
-    labels, tp, _, fn = _class_counts(y_true, y_pred)
-    return _select(labels, _safe_divide(tp, tp + fn), pos_label, average)
+    labels, tp, fp, fn = _class_counts(y_true, y_pred)
+    return _select(labels, _recall_per_class(tp, fp, fn), pos_label, average)
 
 
 def f1(y_true, y_pred, pos_label=1, average="binary"):
@@ -419,9 +469,7 @@ def f1(y_true, y_pred, pos_label=1, average="binary"):
     """
     y_true, y_pred = _check_targets(y_true, y_pred)
     labels, tp, fp, fn = _class_counts(y_true, y_pred)
-    p = _safe_divide(tp, tp + fp)
-    r = _safe_divide(tp, tp + fn)
-    return _select(labels, _safe_divide(2 * p * r, p + r), pos_label, average)
+    return _select(labels, _f1_per_class(tp, fp, fn), pos_label, average)
 
 
 # ---------------------------------------------------------------------
@@ -583,16 +631,38 @@ class StreamingConfusionMatrix:
 
     Attributes:
     ----------
-    - labels_: np.ndarray of shape (n_classes,), the row/column labels of result()
+    - labels_: np.ndarray of shape (n_classes,), the row/column labels of result(). Without
+    fixed labels it holds every class seen since the last reset (sorted), including classes
+    whose chunks have left the window (their counts are then 0).
 
     Raises:
     ------
     - ValueError: if labels is empty, not 1-D or has duplicates, or window is not a
     positive integer
+
+    Complexity:
+    ----------
+    - Space complexity: O(k^2) for k classes, plus O(k^2) per chunk kept in the window
+
+    Note:
+    ----
+    - Each chunk is counted with the vectorised 2.1 confusion_matrix (one np.bincount) and
+    added into the running total. With a window, each chunk's small matrix is kept and
+    subtracted when it leaves; integer counts make this exact.
     """
 
     def __init__(self, labels=None, window=None):
-        raise NotImplementedError
+        self._fixed = None if labels is None else _check_labels(labels)
+        self.window = None if window is None else check_positive_int(window, "window")
+        self.reset()
+
+    def reset(self):
+        """Forget all counts (fixed labels are kept). Returns self."""
+        self.labels_ = self._fixed
+        k = 0 if self._fixed is None else self._fixed.size
+        self._total = np.zeros((k, k), dtype=np.int64)
+        self._chunks = deque()
+        return self
 
     def update(self, y_true, y_pred):
         """
@@ -611,18 +681,50 @@ class StreamingConfusionMatrix:
         ------
         - ValueError: if the chunk fails validation (see _check_targets), or contains a
         label outside a fixed ``labels``
-        - TypeError: if labels mix strings and numbers
+        - TypeError: if a chunk's labels are strings and earlier labels numbers (or the
+        other way round)
 
         Complexity:
         ----------
         - Time complexity: O(n log k + k^2) for n samples and k classes
         - Space complexity: O(k^2) per chunk kept in the window
         """
-        raise NotImplementedError
+        y_true, y_pred = _check_targets(y_true, y_pred)
+        if self._fixed is not None:
+            chunk_labels = self._fixed
+        else:
+            chunk_labels = np.union1d(y_true, y_pred)
+            self._add_labels(chunk_labels)
+        chunk_cm = confusion_matrix(y_true, y_pred, labels=chunk_labels)
 
-    def reset(self):
-        """Forget all counts (fixed labels are kept). Returns self."""
-        raise NotImplementedError
+        self._add(chunk_labels, chunk_cm, sign=1)
+        if self.window is not None:
+            self._chunks.append((chunk_labels, chunk_cm))
+            if len(self._chunks) > self.window:
+                self._add(*self._chunks.popleft(), sign=-1)
+        return self
+
+    def _add_labels(self, chunk_labels):
+        """Merge new labels into the sorted labels_, moving the counts to match."""
+        if self.labels_ is None:
+            self.labels_ = chunk_labels
+            self._total = np.zeros((chunk_labels.size,) * 2, dtype=np.int64)
+            return
+        if (self.labels_.dtype.kind in "US") != (chunk_labels.dtype.kind in "US"):
+            # np.union1d would silently turn the number 1 into the string "1"
+            raise TypeError("Mixed label types across chunks, use all numbers or all strings.")
+        labels = np.union1d(self.labels_, chunk_labels)
+        if labels.size == self.labels_.size:
+            return
+        total = np.zeros((labels.size,) * 2, dtype=np.int64)
+        old = np.searchsorted(labels, self.labels_)
+        total[np.ix_(old, old)] = self._total
+        self.labels_, self._total = labels, total
+
+    def _add(self, chunk_labels, chunk_cm, sign):
+        """Add (sign=1) or remove (sign=-1) one chunk's counts from the running total."""
+        pos = _label_indices(chunk_labels, self.labels_)
+        self._total[np.ix_(pos, pos)] += sign * chunk_cm
 
     def result(self):
         """
@@ -631,10 +733,10 @@ class StreamingConfusionMatrix:
         Returns:
         -------
         - np.ndarray of int64, shape (n_classes, n_classes): rows are true labels, columns
-        predicted labels, both in ``labels_`` order. Shape (0, 0) before any data when no
-        labels were given.
+        predicted labels, both in ``labels_`` order (a copy). Shape (0, 0) before any data
+        when no labels were given.
         """
-        raise NotImplementedError
+        return self._total.copy()
 
 
 class _StreamingClassificationMetric:
@@ -643,23 +745,27 @@ class _StreamingClassificationMetric:
 
     Each metric keeps a StreamingConfusionMatrix (with the same window) and computes its
     score from the counts with the 2.1 formulas, so a streamed result equals the 2.1 batch
-    function on all the data seen (or on the chunks in the window).
+    function on all the data seen (or on the chunks in the window). Subclasses implement
+    _score(labels, cm), called only when at least one sample has been seen.
 
     result() is NaN while no samples have been seen.
     """
 
     def __init__(self, window=None):
-        raise NotImplementedError
+        self._cm = StreamingConfusionMatrix(window=window)
+        self.window = self._cm.window
 
     def update(self, y_true, y_pred):
         """
         Add one chunk; see StreamingConfusionMatrix.update. Returns self.
         """
-        raise NotImplementedError
+        self._cm.update(y_true, y_pred)
+        return self
 
     def reset(self):
         """Forget all data seen so far. Returns self."""
-        raise NotImplementedError
+        self._cm.reset()
+        return self
 
     def result(self):
         """
@@ -667,8 +773,19 @@ class _StreamingClassificationMetric:
 
         Returns:
         -------
-        - float in [0, 1], or NaN if no samples have been seen yet
+        - float in [0, 1], or NaN if no samples have been seen yet (or in the window)
+
+        Raises:
+        ------
+        - ValueError: from Precision / Recall / F1 with average='binary' when more than
+        2 classes are present
         """
+        cm = self._cm.result()
+        if cm.sum() == 0:
+            return float("nan")
+        return self._score(self._cm.labels_, cm)
+
+    def _score(self, labels, cm):
         raise NotImplementedError
 
 
@@ -680,6 +797,9 @@ class Accuracy(_StreamingClassificationMetric):
     ----------
     - window: int >= 1 or None, number of most recent chunks to score (None = all)
     """
+
+    def _score(self, labels, cm):
+        return float(np.trace(cm) / cm.sum())
 
 
 class _PerClassMetric(_StreamingClassificationMetric):
@@ -701,19 +821,39 @@ class _PerClassMetric(_StreamingClassificationMetric):
     ----
     - A class not seen yet does not take part in the macro average; a 0/0 score is 0.0,
     as in the 2.1 functions.
+    - With a window, only classes present in the window count (as the batch function on
+    those chunks would see them).
     """
 
+    _per_class = None   # set by subclasses to one of the 2.1 per-class formulas
+
     def __init__(self, pos_label=1, average="binary", window=None):
-        raise NotImplementedError
+        _check_average(average)
+        super().__init__(window=window)
+        self.pos_label = pos_label
+        self.average = average
+
+    def _score(self, labels, cm):
+        # drop classes with no samples in the counted chunks (e.g. left the window)
+        present = (cm.sum(axis=0) + cm.sum(axis=1)) > 0
+        cm = cm[np.ix_(present, present)]
+        per_class = self._per_class(*_counts_from_matrix(cm))
+        return _select(labels[present], per_class, self.pos_label, self.average)
 
 
 class Precision(_PerClassMetric):
     """Streaming precision TP / (TP + FP); parameters as _PerClassMetric."""
 
+    _per_class = staticmethod(_precision_per_class)
+
 
 class Recall(_PerClassMetric):
     """Streaming recall TP / (TP + FN); parameters as _PerClassMetric."""
 
+    _per_class = staticmethod(_recall_per_class)
+
 
 class F1(_PerClassMetric):
     """Streaming F1 = 2PR / (P + R); parameters as _PerClassMetric."""
+
+    _per_class = staticmethod(_f1_per_class)
