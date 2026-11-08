@@ -17,6 +17,7 @@ from numcompute_stream.metrics import (
     F1,
     Precision,
     Recall,
+    StreamingAUC,
     StreamingConfusionMatrix,
 )
 
@@ -145,3 +146,78 @@ def test_metrics_edge_cases_no_data_unseen_class_and_errors():
         Precision(average="micro")
     with pytest.raises(ValueError, match="average='binary' needs at most 2 classes"):
         Precision().update([0, 1, 2], [0, 1, 2]).result()
+
+
+# ---------------------------------------------------------------------
+# StreamingAUC (score histogram over [0, 1], see the AUC spike)
+# ---------------------------------------------------------------------
+
+def _batch_auc(y_true, y_score, pos_label=1):
+    fpr, tpr, _ = metrics.roc_curve(y_true, y_score, pos_label=pos_label)
+    return metrics.auc(fpr, tpr)
+
+
+def _leaf_scores(n=300, seed=3):
+    """Tree-like scores: few distinct probabilities (many ties), incl. exactly 0 and 1."""
+    rng = np.random.default_rng(seed)
+    y = rng.integers(0, 2, n)
+    leaves = np.array([0.0, 0.2, 0.25, 0.5, 0.75, 0.9, 1.0])
+    shift = np.where(y == 1, 2, 0)
+    return y, leaves[np.clip(rng.integers(0, 5, n) + shift, 0, 6)]
+
+
+@pytest.mark.parametrize("chunk_size", [1, 50])
+def test_auc_exact_when_scores_fall_in_distinct_bins(chunk_size):
+    y, s = _leaf_scores()
+    auc = StreamingAUC()
+    for yt, ys in _chunks(y, s, chunk_size):
+        assert auc.update(yt, ys) is auc
+    assert auc.result() == pytest.approx(_batch_auc(y, s), abs=1e-12)
+
+    # string labels with pos_label, and a rolling window of the last 2 chunks
+    labels = np.where(y == 1, "yes", "no")
+    windowed = StreamingAUC(pos_label="yes", window=2)
+    chunks = list(_chunks(labels, s, 50))
+    for yt, ys in chunks:
+        windowed.update(yt, ys)
+    recent_y = np.concatenate([c[0] for c in chunks[-2:]])
+    recent_s = np.concatenate([c[1] for c in chunks[-2:]])
+    assert windowed.result() == pytest.approx(_batch_auc(recent_y, recent_s, "yes"),
+                                              abs=1e-12)
+
+
+def test_auc_continuous_scores_within_reported_error_bound():
+    rng = np.random.default_rng(4)
+    y = rng.integers(0, 2, 2000)
+    s = 1 / (1 + np.exp(-(0.3 * rng.normal(size=2000) + 0.2 * (2 * y - 1))))  # crowded
+    coarse = StreamingAUC(bins=20)
+    for yt, ys in _chunks(y, s, 100):
+        coarse.update(yt, ys)
+    exact = _batch_auc(y, s)
+    assert 0 < coarse.max_error() < 0.5
+    assert abs(coarse.result() - exact) <= coarse.max_error()
+
+    fine = StreamingAUC(bins=1000).update(y, s)          # more bins -> tighter bound
+    assert fine.max_error() < coarse.max_error()
+    assert abs(fine.result() - exact) <= fine.max_error()
+
+
+def test_auc_edge_cases_undefined_and_invalid_input():
+    auc = StreamingAUC()
+    assert np.isnan(auc.result()) and np.isnan(auc.max_error())    # nothing seen yet
+    auc.update([1, 1], [0.2, 0.9])
+    assert np.isnan(auc.result())                                    # no negatives yet
+    auc.update([0], [0.1])
+    assert auc.result() == 1.0
+    assert np.isnan(auc.reset().result())
+
+    with pytest.raises(ValueError, match=r"y_score must be in \[0, 1\]"):
+        auc.update([0, 1], [0.5, 1.5])
+    with pytest.raises(ValueError, match="more than 2 classes"):
+        auc.update([0, 1], [0.1, 0.2]).update([2], [0.3])
+    with pytest.raises(ValueError, match="same length"):
+        auc.update([0, 1], [0.5])
+    with pytest.raises(ValueError, match="bins must be a positive integer"):
+        StreamingAUC(bins=0)
+    with pytest.raises(ValueError, match="window must be a positive integer"):
+        StreamingAUC(window=-1)

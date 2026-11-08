@@ -857,3 +857,80 @@ class F1(_PerClassMetric):
     """Streaming F1 = 2PR / (P + R); parameters as _PerClassMetric."""
 
     _per_class = staticmethod(_f1_per_class)
+
+
+class StreamingAUC:
+    """
+    ROC AUC for binary classification, accumulated over chunks in bounded memory.
+
+    Keeps one histogram of scores per class (B fixed bins over [0, 1]). The AUC is the
+    Mann-Whitney form P(score_pos > score_neg) + 0.5 * P(tie), with scores in the same bin
+    counted as ties. This equals the 2.1 roc_curve + auc result exactly whenever distinct
+    scores fall in distinct bins (e.g. a tree's few leaf probabilities); otherwise the error
+    is at most max_error(). Chosen over a reservoir sample by a spike (more accurate, faster,
+    and the score range [0, 1] is known in advance).
+
+    Parameters:
+    ----------
+    - bins: int >= 1, number of equal-width score bins over [0, 1] (default 1000)
+    - pos_label: the positive class (default 1); the other class is negative
+    - window: int >= 1 or None, number of most recent chunks to score (None = all)
+
+    Raises:
+    ------
+    - ValueError: if bins or window is not a positive integer
+
+    Complexity:
+    ----------
+    - Time complexity: update O(n + B) for n samples, result O(B)
+    - Space complexity: O(B), plus O(B) per chunk kept in the window
+    """
+
+    def __init__(self, bins=1000, pos_label=1, window=None):
+        raise NotImplementedError
+
+    def update(self, y_true, y_score):
+        """
+        Add one chunk of true labels and predicted scores.
+
+        Parameters:
+        ----------
+        - y_true: array-like of shape (n_samples,), binary labels (numbers or strings)
+        - y_score: array-like of shape (n_samples,), predicted probability of pos_label,
+        each in [0, 1]
+
+        Returns:
+        -------
+        - self
+
+        Raises:
+        ------
+        - ValueError: if the chunk fails validation (see _check_targets), y_score is not
+        numeric or outside [0, 1], or more than 2 classes have been seen since reset
+        """
+        raise NotImplementedError
+
+    def reset(self):
+        """Forget all data seen so far. Returns self."""
+        raise NotImplementedError
+
+    def result(self):
+        """
+        Return the AUC over all data seen (or the window).
+
+        Returns:
+        -------
+        - float in [0, 1], or NaN while no positive or no negative has been seen
+        """
+        raise NotImplementedError
+
+    def max_error(self):
+        """
+        Upper bound on |result() - exact AUC| caused by binning.
+
+        Returns:
+        -------
+        - float: 0.5 * (positive-negative pairs in the same bin) / (all pairs); NaN while the
+        AUC is undefined. Loose when the same-bin pairs are true ties.
+        """
+        raise NotImplementedError
