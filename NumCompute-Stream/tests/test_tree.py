@@ -269,6 +269,15 @@ def test_partial_fit_validation_and_fit_resets_stream():
         tree.partial_fit(X[:5, :2], y[:5])
     assert tree.n_buffered_ == 20
 
+    # the buffer owns its data: a caller reusing its chunk arrays doesn't change it
+    X_reused, y_reused = X[20:40].copy(), y[20:40].copy()
+    tree.partial_fit(X_reused, y_reused)
+    X_reused[:], y_reused[:] = 0.0, 7
+    tree.partial_fit(X[40:50], y[40:50])                   # 50 rows: retrain
+    assert list(tree.classes_) == [0, 1]
+    np.testing.assert_array_equal(
+        tree.threshold_, DecisionTreeClassifier().fit(X[:50], y[:50]).threshold_)
+
     # fit starts again: buffer cleared, new feature count allowed
     tree.fit(X[:, :2], y)
     assert tree.n_buffered_ == 0 and tree.n_retrains_ == 0 and tree.n_features_in_ == 2

@@ -329,8 +329,10 @@ class DecisionTreeClassifier(Estimator):
             raise TypeError("Mixed label types across chunks, use all numbers or all strings.")
 
         self.n_features_in_ = n_features
-        self._buffer_X.append(X)
-        self._buffer_y.append(y)
+        # copy: check_X_y may return the caller's own arrays, and a caller that reuses them
+        # for the next chunk would otherwise change the buffered data
+        self._buffer_X.append(X.copy())
+        self._buffer_y.append(y.copy())
         if self.n_buffered_ >= self.buffer_size:
             X_all = np.concatenate(self._buffer_X)
             y_all = np.concatenate(self._buffer_y)
