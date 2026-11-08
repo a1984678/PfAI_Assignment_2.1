@@ -217,6 +217,8 @@ def test_auc_edge_cases_undefined_and_invalid_input():
         auc.update([0, 1], [0.1, 0.2]).update([2], [0.3])
     with pytest.raises(ValueError, match="same length"):
         auc.update([0, 1], [0.5])
+    with pytest.raises(ValueError, match="pos_label=1 is not a valid label"):
+        StreamingAUC().update(["no", "yes"], [0.2, 0.8])   # would otherwise be NaN forever
     with pytest.raises(ValueError, match="bins must be a positive integer"):
         StreamingAUC(bins=0)
     with pytest.raises(ValueError, match="window must be a positive integer"):

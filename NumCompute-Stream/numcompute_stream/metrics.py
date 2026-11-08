@@ -8,6 +8,9 @@ Streaming API (each class has ``update(y_true_chunk, y_pred_chunk) -> self``,
 - ``Accuracy``, ``Precision``, ``Recall``, ``F1``: scores computed from a streaming
   confusion matrix with the 2.1 formulas, so a streamed result equals the batch function
   on the same data. ``result()`` is NaN before any data; 0/0 per class is 0.0 (as in 2.1)
+- ``StreamingAUC(bins=1000, pos_label=1, window=None)``: ROC AUC from per-class score
+  histograms over [0, 1]; ``update(y_true_chunk, y_score_chunk)`` takes probabilities.
+  Exact when distinct scores fall in distinct bins, otherwise within ``max_error()``
 
 Batch functions (adapted from NumCompute, Assignment 2.1)
 ---------------------------------------------------------
@@ -887,7 +890,10 @@ class StreamingAUC:
     """
 
     def __init__(self, bins=1000, pos_label=1, window=None):
-        raise NotImplementedError
+        self.bins = check_positive_int(bins, "bins")
+        self.pos_label = pos_label
+        self.window = None if window is None else check_positive_int(window, "window")
+        self.reset()
 
     def update(self, y_true, y_score):
         """
@@ -906,13 +912,59 @@ class StreamingAUC:
         Raises:
         ------
         - ValueError: if the chunk fails validation (see _check_targets), y_score is not
-        numeric or outside [0, 1], or more than 2 classes have been seen since reset
+        numeric or outside [0, 1], more than 2 classes have been seen since reset, or 2
+        classes have been seen and neither is pos_label. A rejected chunk changes nothing.
+
+        Complexity:
+        ----------
+        - Time complexity: O(n + B) for n samples and B bins
+        - Space complexity: O(n + B)
         """
-        raise NotImplementedError
+        y_true, y_score = _check_targets(y_true, y_score)
+        y_score = _to_float(y_score, "y_score")
+        if np.any((y_score < 0) | (y_score > 1)):
+            raise ValueError("y_score must be in [0, 1]; use predicted probabilities of "
+                             "pos_label.")
+
+        # check everything before changing any state, so a bad chunk leaves no trace
+        classes = np.unique(y_true)
+        if self._classes is not None:
+            classes = np.union1d(self._classes, classes)
+        if classes.size > 2:
+            raise ValueError("StreamingAUC is for binary classification; more than 2 classes "
+                             "seen: {}".format(classes.tolist()))
+        if classes.size == 2 and not np.any(classes == self.pos_label):
+            # e.g. string labels with the default pos_label=1: no sample would ever count
+            # as positive and result() would stay NaN
+            raise ValueError("pos_label={!r} is not a valid label. Labels: {}"
+                             .format(self.pos_label, classes.tolist()))
+        self._classes = classes
+
+        # bin index floor(score * B); a score of exactly 1.0 goes into the last bin
+        bin_idx = np.minimum((y_score * self.bins).astype(np.int64), self.bins - 1)
+        row = (y_true == self.pos_label).astype(np.int64)          # 0 = negative, 1 = positive
+        chunk = np.bincount(row * self.bins + bin_idx, minlength=2 * self.bins)
+        chunk = chunk.reshape(2, self.bins)
+
+        self._counts += chunk
+        if self.window is not None:
+            self._chunks.append(chunk)
+            if len(self._chunks) > self.window:
+                self._counts -= self._chunks.popleft()
+        return self
 
     def reset(self):
         """Forget all data seen so far. Returns self."""
-        raise NotImplementedError
+        self._counts = np.zeros((2, self.bins), dtype=np.int64)    # rows: negatives, positives
+        self._chunks = deque()
+        self._classes = None
+        return self
+
+    def _pairs(self):
+        """Float64 negative and positive counts per bin and the number of pairs (0 if none)."""
+        # float64 so pos * neg cannot overflow int64 on very long streams
+        neg, pos = self._counts.astype(np.float64)
+        return neg, pos, neg.sum() * pos.sum()
 
     def result(self):
         """
@@ -921,8 +973,16 @@ class StreamingAUC:
         Returns:
         -------
         - float in [0, 1], or NaN while no positive or no negative has been seen
+
+        Complexity:
+        ----------
+        - Time and space complexity: O(B)
         """
-        raise NotImplementedError
+        neg, pos, n_pairs = self._pairs()
+        if n_pairs == 0:
+            return float("nan")
+        neg_below = np.cumsum(neg) - neg                 # negatives in strictly lower bins
+        return float(((pos * neg_below).sum() + 0.5 * (pos * neg).sum()) / n_pairs)
 
     def max_error(self):
         """
@@ -933,4 +993,8 @@ class StreamingAUC:
         - float: 0.5 * (positive-negative pairs in the same bin) / (all pairs); NaN while the
         AUC is undefined. Loose when the same-bin pairs are true ties.
         """
-        raise NotImplementedError
+        neg, pos, n_pairs = self._pairs()
+        if n_pairs == 0:
+            return float("nan")
+        # each same-bin pair counts 0.5 but is really 0, 0.5 or 1
+        return float(0.5 * (pos * neg).sum() / n_pairs)
