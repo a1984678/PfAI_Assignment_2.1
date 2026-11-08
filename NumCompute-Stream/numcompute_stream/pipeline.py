@@ -24,7 +24,22 @@ Pipeline chaining, e.g.:
         ('encode', OneHotEncoder())
     ])
     X_tr = pipe.fit_transform(X)
+
+Streaming (2.2)
+---------------
+- ``Pipeline.partial_fit(X_chunk, y_chunk)``: each transformer is updated with the chunk
+  and transforms it for the next step; the final step gets ``partial_fit``. Every step is
+  checked for streaming support before any step is updated.
+- ``Pipeline.predict_proba(X)``: transform, then the final step's ``predict_proba``.
+- ``Pipeline.supports_partial_fit``: True if every step streams (pipelines can be nested).
 """
+
+import numpy as np
+
+
+def _supports_partial_fit(step):
+    """The step's supports_partial_fit flag, or (no flag) whether it has partial_fit."""
+    return getattr(step, "supports_partial_fit", hasattr(step, "partial_fit"))
 
 
 class Transformer:
@@ -268,6 +283,9 @@ class Pipeline:
     - Any object with fit and transform works as a step, it does not have to inherit from
     Transformer. A step with fit_transform is called through it, otherwise fit then transform.
     - An empty Pipeline is allowed: fit does nothing and transform returns X unchanged.
+    - Streaming: partial_fit updates then transforms each step per chunk. Each transformer's
+    output width is recorded by the first fit / partial_fit and must not change later, since
+    the final model's buffer can't mix widths; fit resets it.
     """
 
     def __init__(self, steps):
@@ -284,6 +302,7 @@ class Pipeline:
         - TypeError: if the final step does not implement fit
         """
         self.steps = steps
+        self._widths = {}         # output columns of each transformer, by step index
         if not self.steps:
             return
 
@@ -310,16 +329,36 @@ class Pipeline:
         -------
         - self: object
         """
+        self._widths = {}         # fit starts again: any output width is allowed
         if not self.steps:
             return self
 
         transformed = X
-        for name, transformer in self.steps[:-1]:
+        for i, (name, transformer) in enumerate(self.steps[:-1]):
             transformed = _fit_transform_step(name, transformer, transformed, y)
+            self._check_width(i, name, transformed)
 
         _, estimator = self.steps[-1]
         estimator.fit(transformed, y)
         return self
+
+    def _check_width(self, i, name, transformed):
+        """
+        Record step i's output width on first use; raise if a later chunk differs.
+
+        Raises:
+        ------
+        - ValueError: if the number of output columns changed since it was recorded
+        """
+        if np.ndim(transformed) != 2:
+            return
+        width = np.shape(transformed)[1]
+        expected = self._widths.setdefault(i, width)
+        if width != expected:
+            raise ValueError(
+                f"Pipeline step {name!r} output changed from {expected} to {width} columns "
+                "between chunks, so later steps can't use it (e.g. a OneHotEncoder found a "
+                "new category). Fit that step on all known categories first.")
 
     def transform(self, X):
         """
@@ -363,9 +402,12 @@ class Pipeline:
         - TypeError: if any step (including the last) has neither fit_transform nor fit and
         transform
         """
+        self._widths = {}         # fit starts again: any output width is allowed
         transformed = X
-        for name, transformer in self.steps:
+        for i, (name, transformer) in enumerate(self.steps):
             transformed = _fit_transform_step(name, transformer, transformed, y)
+            if i < len(self.steps) - 1:
+                self._check_width(i, name, transformed)
         return transformed
 
     def predict(self, X):
@@ -408,7 +450,7 @@ class Pipeline:
         A step counts as streaming if its supports_partial_fit flag is True, or, for an
         object without the flag, if it has a partial_fit method. An empty Pipeline is True.
         """
-        raise NotImplementedError
+        return all(_supports_partial_fit(step) for _, step in self.steps)
 
     def partial_fit(self, X, y=None):
         """
@@ -436,7 +478,21 @@ class Pipeline:
         Fit the encoder on all known categories first to keep the width fixed.
         - Anything a step raises for an invalid chunk
         """
-        raise NotImplementedError
+        for name, step in self.steps:              # check all steps before touching any
+            if not _supports_partial_fit(step):
+                raise TypeError(f"Pipeline step {name!r} does not support partial_fit")
+        if not self.steps:
+            return self
+
+        transformed = X
+        for i, (name, transformer) in enumerate(self.steps[:-1]):
+            transformer.partial_fit(transformed, y)
+            transformed = transformer.transform(transformed)
+            self._check_width(i, name, transformed)
+
+        _, estimator = self.steps[-1]
+        estimator.partial_fit(transformed, y)
+        return self
 
     def predict_proba(self, X):
         """
@@ -455,4 +511,16 @@ class Pipeline:
         - ValueError: if the pipeline has no steps
         - TypeError: if the final step does not implement predict_proba
         """
-        raise NotImplementedError
+        if not self.steps:
+            raise ValueError("Cannot predict with an empty pipeline")
+
+        transformed = X
+        for name, transformer in self.steps[:-1]:
+            if not hasattr(transformer, "transform"):
+                raise TypeError(f"Pipeline step {name!r} must implement transform")
+            transformed = transformer.transform(transformed)
+
+        name, estimator = self.steps[-1]
+        if not hasattr(estimator, "predict_proba"):
+            raise TypeError(f"Final pipeline step {name!r} must implement predict_proba")
+        return estimator.predict_proba(transformed)
