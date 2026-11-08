@@ -11,15 +11,30 @@
   - Between retrains, ``.predict()`` uses the most recently trained tree
 
 - Support config: ``max_depth``, ``min_samples_split``, ``max_features``,
-  ``buffer_size``
+  ``buffer_size`` (plus ``criterion`` and ``seed``)
+
+Streaming API
+-------------
+- ``partial_fit(X_chunk, y_chunk)``: buffer, retrain when full (see above)
+- ``predict(X)`` / ``predict_proba(X)``: labels / leaf class fractions, shape
+  (n_samples,) / (n_samples, n_classes); ``classes_`` holds every label seen so far
+- ``n_buffered_``, ``n_retrains_``: buffer state for logging
+
+How it works
+------------
+Same rules as the course tree (``classification-tree.html``, Week 10): weighted gain,
+a split needs gain > 0, ties go to the lowest feature then the lowest threshold, a
+majority tie goes to the smallest class. Numeric features use threshold questions
+``X[:, f] <= t``. The best split over all features and thresholds is found at once
+(sort, cumulative class counts), the tree is stored as flat arrays, and prediction
+moves every row down one level per step. Python loops remain only once per node
+(build) and once per tree level (predict). NaN is rejected: impute upstream.
 
 Example
 -------
 >>> tree = DecisionTreeClassifier(max_depth=5, buffer_size=500)
 >>> for X_chunk, y_chunk in stream:
 ...     tree.partial_fit(X_chunk, y_chunk)
-
-See ``classification-tree.html`` (Canvas) for details on building the tree.
 """
 
 import numpy as np
