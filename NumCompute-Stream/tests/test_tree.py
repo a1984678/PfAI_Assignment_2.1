@@ -184,3 +184,96 @@ def test_validation_errors():
         DecisionTreeClassifier(max_features=0.5)
     with pytest.raises(ValueError, match="buffer_size must be a positive integer"):
         DecisionTreeClassifier(buffer_size=0)
+
+
+# ---------------------------------------------------------------------
+# partial_fit: buffered retraining
+# ---------------------------------------------------------------------
+
+def _stream(n=200, d=3, seed=8):
+    rng = np.random.default_rng(seed)
+    X = rng.normal(size=(n, d))
+    return X, (X[:, 0] - X[:, 1] > 0).astype(int)
+
+
+def test_partial_fit_retrains_when_buffer_full_then_clears():
+    X, y = _stream()
+    assert DecisionTreeClassifier.supports_partial_fit is True
+    tree = DecisionTreeClassifier(max_depth=3, buffer_size=50)
+
+    # 2 chunks of 20: buffer not full yet, so there is no tree to predict with
+    tree.partial_fit(X[:20], y[:20])
+    assert tree.partial_fit(X[20:40], y[20:40]) is tree
+    assert tree.n_buffered_ == 40 and tree.n_retrains_ == 0
+    with pytest.raises(RuntimeError, match="not fitted.*40/50"):
+        tree.predict(X)
+
+    # 3rd chunk: 60 >= 50, so retrain on all 60 buffered rows and clear the buffer
+    tree.partial_fit(X[40:60], y[40:60])
+    assert tree.n_buffered_ == 0 and tree.n_retrains_ == 1
+    first = DecisionTreeClassifier(max_depth=3).fit(X[:60], y[:60])
+    np.testing.assert_array_equal(tree.feature_, first.feature_)
+    np.testing.assert_array_equal(tree.threshold_, first.threshold_)
+
+    # between retrains, predict keeps using the last tree
+    tree.partial_fit(X[60:80], y[60:80]).partial_fit(X[80:100], y[80:100])
+    assert tree.n_buffered_ == 40
+    np.testing.assert_array_equal(tree.predict(X), first.predict(X))
+
+    # next retrain sees only the new buffer (rows 60..119), not the old data
+    tree.partial_fit(X[100:120], y[100:120])
+    assert tree.n_retrains_ == 2
+    second = DecisionTreeClassifier(max_depth=3).fit(X[60:120], y[60:120])
+    np.testing.assert_array_equal(tree.threshold_, second.threshold_)
+
+
+def test_partial_fit_small_buffer_and_chunk_larger_than_buffer():
+    X, y = _stream()
+    every = DecisionTreeClassifier(buffer_size=1)          # retrain on every chunk
+    for start in range(0, 60, 20):
+        every.partial_fit(X[start:start + 20], y[start:start + 20])
+    assert every.n_retrains_ == 3
+    np.testing.assert_array_equal(every.threshold_,
+                                  DecisionTreeClassifier().fit(X[40:60], y[40:60]).threshold_)
+
+    big = DecisionTreeClassifier(buffer_size=30).partial_fit(X[:100], y[:100])
+    assert big.n_retrains_ == 1 and big.n_buffered_ == 0  # whole chunk used, not split
+    assert big.value_[0].sum() == 100
+
+
+def test_partial_fit_classes_accumulate_across_retrains():
+    X = np.arange(10.0).reshape(-1, 1)
+    tree = DecisionTreeClassifier(buffer_size=10)
+    tree.partial_fit(X, ["a"] * 5 + ["b"] * 5)
+    assert list(tree.classes_) == ["a", "b"]
+
+    # the next buffer has no "a": it keeps its column, with probability 0
+    tree.partial_fit(X, ["b"] * 5 + ["c"] * 5)
+    assert list(tree.classes_) == ["a", "b", "c"]
+    proba = tree.predict_proba([[0.0], [9.0]])
+    np.testing.assert_array_equal(proba, [[0, 1, 0], [0, 0, 1]])
+    np.testing.assert_array_equal(tree.predict([[0.0], [9.0]]), ["b", "c"])
+
+    with pytest.raises(TypeError, match="Mixed label types"):
+        tree.partial_fit(X, np.arange(10))
+
+
+def test_partial_fit_validation_and_fit_resets_stream():
+    X, y = _stream()
+    tree = DecisionTreeClassifier(buffer_size=50).partial_fit(X[:20], y[:20])
+
+    # a bad chunk is rejected without touching the buffer
+    with pytest.raises(ValueError, match="must not contain NaN"):
+        tree.partial_fit(np.full((5, 3), np.nan), y[:5])
+    with pytest.raises(ValueError, match="2 features, but 3"):
+        tree.partial_fit(X[:5, :2], y[:5])
+    assert tree.n_buffered_ == 20
+
+    # fit starts again: buffer cleared, new feature count allowed
+    tree.fit(X[:, :2], y)
+    assert tree.n_buffered_ == 0 and tree.n_retrains_ == 0 and tree.n_features_in_ == 2
+    fitted = tree.predict(X[:, :2])
+
+    # partial_fit after fit: the fitted tree is used until the buffer fills
+    tree.partial_fit(X[:10, :2], y[:10])
+    np.testing.assert_array_equal(tree.predict(X[:, :2]), fitted)

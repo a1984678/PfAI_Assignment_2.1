@@ -251,6 +251,34 @@ class DecisionTreeClassifier(Estimator):
             active = active[self.feature_[at[active]] >= 0]
         return at
 
+    def partial_fit(self, X, y):
+        """
+        Add one chunk to the buffer; retrain once it holds at least buffer_size samples.
+
+        The retrain uses all buffered rows (possibly more than buffer_size) and then clears
+        the buffer, so each tree is trained on the latest buffer only. Between retrains,
+        predict uses the most recent tree (or the tree from fit). classes_ keeps every label
+        seen in the stream, so predict_proba always has the same columns; a class missing
+        from the latest buffer gets probability 0.
+
+        Parameters:
+        ----------
+        - X: array-like of shape (n_samples, n_features), one chunk, no NaN or infinity;
+        the first chunk (or fit) fixes n_features
+        - y: array-like of shape (n_samples,), labels (numbers or strings)
+
+        Returns:
+        -------
+        - self
+
+        Raises:
+        ------
+        - ValueError: if the chunk is invalid or its feature count changes (the buffer is
+        left unchanged)
+        - TypeError: if string and numeric labels are mixed across chunks
+        """
+        raise NotImplementedError
+
     def predict_proba(self, X):
         """
         Class probabilities: the training class fractions of the leaf each row reaches.
