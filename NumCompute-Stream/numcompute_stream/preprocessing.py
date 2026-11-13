@@ -562,6 +562,8 @@ class OneHotEncoder(Transformer):
         - TypeError: if a column mixes strings and numbers, within the chunk or compared with
         the categories already seen
 
+        A rejected chunk leaves the encoder unchanged (all features are checked first).
+
         Complexity:
         ----------
         - Time complexity: O(m * (n log n + u * k)) for n samples, m features, u unique values
@@ -590,12 +592,18 @@ class OneHotEncoder(Transformer):
             self.n_features_in_ = n_features
             return self
 
-        for i, known in enumerate(self.categories_):
-            seen = self._unique(X[:, i])
+        # Pass 1: find every feature's new categories, so a TypeError in any feature is
+        # raised before anything changes (a rejected chunk leaves the encoder as it was).
+        new_categories = []
+        for known, col in zip(self.categories_, X.T):
+            seen = self._unique(col)
             # Sorting old and new categories together raises TypeError if one is a string
             # and the other a number, so a column cannot switch type between chunks.
             self._unique(np.concatenate([known.astype(object), seen.astype(object)]))
-            new = seen[~self._matches(seen, known).any(axis=1)]
+            new_categories.append(seen[~self._matches(seen, known).any(axis=1)])
+
+        # Pass 2: append the new categories and give them output columns at the end.
+        for i, (known, new) in enumerate(zip(self.categories_, new_categories)):
             if new.size == 0:
                 continue
             start = len(self.columns_)

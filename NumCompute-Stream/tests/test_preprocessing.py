@@ -273,3 +273,16 @@ def test_onehot_streaming_unknowns_nan_and_errors():
         words.partial_fit(np.array([["a", "b"]]))
     with pytest.raises(ValueError, match="handle_unknown must be"):
         OneHotEncoder(handle_unknown="skip")
+
+
+def test_onehot_rejected_chunk_leaves_state_unchanged():
+    # feature 0 has a new category, feature 1 switches from numbers to strings: the chunk
+    # is rejected, and feature 0 must not keep "c" (else a Pipeline's width check fails
+    # on every later, valid chunk)
+    enc = OneHotEncoder().partial_fit(np.array([["a", 1], ["b", 2]], dtype=object))
+    with pytest.raises(TypeError, match="Mixed types in columns"):
+        enc.partial_fit(np.array([["c", "x"]], dtype=object))
+    assert list(enc.categories_[0]) == ["a", "b"]
+    assert len(enc.columns_) == 4
+    np.testing.assert_array_equal(enc.transform(np.array([["b", 1]], dtype=object)),
+                                  [[0, 1, 1, 0]])
