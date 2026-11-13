@@ -286,3 +286,17 @@ def test_onehot_rejected_chunk_leaves_state_unchanged():
     assert len(enc.columns_) == 4
     np.testing.assert_array_equal(enc.transform(np.array([["b", 1]], dtype=object)),
                                   [[0, 1, 1, 0]])
+
+
+# ---------------------------------------------------------------------
+# Error messages shared by every transformer
+# ---------------------------------------------------------------------
+
+@pytest.mark.parametrize("cls", [StandardScaler, MinMaxScaler, OneHotEncoder, SimpleImputer,
+                                 Imputer], ids=lambda cls: cls.__name__)
+def test_transform_feature_mismatch_message_names_counts(cls):
+    # the 2.1 prefix stays (baseline tests match it); the counts say what went wrong
+    transformer = cls().partial_fit(np.array([[1.0, 10.0], [3.0, 30.0]]))
+    with pytest.raises(ValueError, match=(r"^Incompatible dimensionality: X has 3 features, "
+                                          rf"but {cls.__name__} was fitted with 2\.$")):
+        transformer.transform(np.ones((2, 3)))

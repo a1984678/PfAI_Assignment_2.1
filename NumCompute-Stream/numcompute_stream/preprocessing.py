@@ -30,6 +30,26 @@ from .pipeline import Transformer
 from .stats import StreamingQuantiles, StreamingStats
 
 
+def _check_transform_features(transformer, X):
+    """
+    Check X has as many columns as the transformer was fitted with.
+
+    Parameters:
+    ----------
+    - transformer: a fitted transformer from this module (has n_features_in_)
+    - X: np.ndarray of shape (n_samples, n_features), already checked to be 2-D
+
+    Raises:
+    ------
+    - ValueError: if X.shape[1] != transformer.n_features_in_. The message keeps the 2.1
+    prefix "Incompatible dimensionality" and adds both counts.
+    """
+    expected = transformer.n_features_in_
+    if X.shape[1] != expected:
+        raise ValueError(f"Incompatible dimensionality: X has {X.shape[1]} features, but "
+                         f"{type(transformer).__name__} was fitted with {expected}.")
+
+
 class StandardScaler(Transformer):
     """
     Standardize features by removing the mean and scaling to unit variance.
@@ -177,8 +197,7 @@ class StandardScaler(Transformer):
         if X.ndim != 2:
             raise ValueError("Input data must have 2 dimensions. Got shape: {}".format(X.shape))
 
-        if X.shape[1] != self.mean_.shape[0]:
-            raise ValueError("Incompatible dimensionality.")
+        _check_transform_features(self, X)
 
         return (X - self.mean_) / self.scale_
 
@@ -370,8 +389,7 @@ class MinMaxScaler(Transformer):
         if X.ndim != 2:
             raise ValueError("Input data must have 2 dimensions. Got shape: {}".format(X.shape))
 
-        if X.shape[1] != self.min_.shape[0]:
-            raise ValueError("Incompatible dimensionality.")
+        _check_transform_features(self, X)
 
         # (X - min_) * scale_, with both factors halved and doubled so X - min_ cannot overflow
         return (X / 2 - self.min_ / 2) * (2 * self.scale_) + self.feature_range[0]
@@ -643,8 +661,7 @@ class OneHotEncoder(Transformer):
         if X.ndim != 2:
             raise ValueError("Input data must have 2 dimensions. Got shape: {}".format(X.shape))
 
-        if X.shape[1] != len(self.categories_):
-            raise ValueError("Incompatible dimensionality.")
+        _check_transform_features(self, X)
 
         out = np.zeros((X.shape[0], len(self.columns_)))
         for i, categories in enumerate(self.categories_):
@@ -821,8 +838,7 @@ class SimpleImputer(Transformer):
         if X.ndim != 2:
             raise ValueError("Input data must have 2 dimensions. Got shape: {}".format(X.shape))
 
-        if X.shape[1] != self.columns_:
-            raise ValueError("Incompatible dimensionality.")
+        _check_transform_features(self, X)
 
         return np.where(np.isnan(X), self.fill_value, X)
 
@@ -981,7 +997,6 @@ class Imputer(Transformer):
         if X.ndim != 2:
             raise ValueError("Input data must have 2 dimensions. Got shape: {}".format(X.shape))
 
-        if X.shape[1] != self.n_features_in_:
-            raise ValueError("Incompatible dimensionality.")
+        _check_transform_features(self, X)
 
         return np.where(np.isnan(X), self.statistics_, X)
