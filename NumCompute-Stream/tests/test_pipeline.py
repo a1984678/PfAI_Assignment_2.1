@@ -95,6 +95,13 @@ def test_partial_fit_checks_every_step_before_changing_state():
     Pipeline([("duck", DuckStream()), ("model", DecisionTreeClassifier())]).partial_fit(X, y)
     assert Pipeline([]).partial_fit(X, y).supports_partial_fit is True
 
+    # X / y length mismatch: only the final step would notice, so check it up front
+    scaler = StandardScaler()
+    pipe = Pipeline([("scale", scaler), ("model", DecisionTreeClassifier())])
+    with pytest.raises(ValueError, match="same number of samples. Got 20 and 19"):
+        pipe.partial_fit(chunks[0][0], chunks[0][1][:-1])
+    assert not hasattr(scaler, "n_features_in_")      # the scaler saw nothing
+
 
 def test_partial_fit_transformer_output_width_change_raises_clearly():
     X1, X2 = np.array([[0.0], [1.0]] * 5), np.array([[0.0], [2.0]] * 5)

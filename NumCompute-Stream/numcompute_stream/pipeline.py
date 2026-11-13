@@ -42,6 +42,14 @@ def _supports_partial_fit(step):
     return getattr(step, "supports_partial_fit", hasattr(step, "partial_fit"))
 
 
+def _n_rows(a):
+    """len(a) without converting it to an array, or None if a has no length (e.g. None)."""
+    try:
+        return len(a)
+    except TypeError:
+        return None
+
+
 class Transformer:
     """
     Base class for all transformers.
@@ -473,6 +481,8 @@ class Pipeline:
         ------
         - TypeError: if any step does not support partial_fit, checked for all steps before
         any step is updated
+        - ValueError: if X and y have different numbers of rows (checked before any step is
+        updated)
         - ValueError: if a transformer's output width differs from the first chunk (e.g. a
         OneHotEncoder finds a new category). Steps before it have already absorbed the chunk.
         Fit the encoder on all known categories first to keep the width fixed.
@@ -481,6 +491,11 @@ class Pipeline:
         for name, step in self.steps:              # check all steps before touching any
             if not _supports_partial_fit(step):
                 raise TypeError(f"Pipeline step {name!r} does not support partial_fit")
+        n_X, n_y = _n_rows(X), _n_rows(y)
+        if y is not None and None not in (n_X, n_y) and n_X != n_y:
+            # only the final step would notice, after the transformers absorbed the chunk
+            raise ValueError(f"X and y must have the same number of samples. "
+                             f"Got {n_X} and {n_y}.")
         if not self.steps:
             return self
 
